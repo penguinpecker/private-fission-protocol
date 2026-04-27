@@ -10,6 +10,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "compile": "hardhat compile",
+    "check:wallet": "node scripts/check-wallet.js",
     "deploy:arbitrum-sepolia": "hardhat run scripts/deploy.js --network arbitrumSepolia",
     "preview": "vite preview --host 127.0.0.1"
   },
