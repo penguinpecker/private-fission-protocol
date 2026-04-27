@@ -6,12 +6,21 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
+    "compile": "hardhat compile",
+    "deploy:arbitrum-sepolia": "hardhat run scripts/deploy.js --network arbitrumSepolia",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "@iexec-nox/handle": "^0.1.0-beta.10",
+    "@iexec-nox/nox-confidential-contracts": "^0.1.0",
+    "@iexec-nox/nox-protocol-contracts": "^0.2.2",
+    "@nomicfoundation/hardhat-ethers": "^4.0.9",
+    "@openzeppelin/contracts": "^5.6.1",
     "@vitejs/plugin-react": "^5.0.4",
-    "vite": "^7.1.12",
-    "typescript": "^5.9.3"
-  },
-  "devDependencies": {}
+    "ethers": "^6.16.0",
+    "hardhat": "^3.4.1",
+    "typescript": "^5.9.3",
+    "viem": "^2.48.4",
+    "vite": "^7.1.12"
+  }
 }

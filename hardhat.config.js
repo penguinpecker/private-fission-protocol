@@ -1,0 +1,22 @@
+import "@nomicfoundation/hardhat-ethers";
+
+/** @type {import("hardhat/config").HardhatUserConfig} */
+export default {
+  solidity: {
+    version: "0.8.28",
+    settings: {
+      optimizer: {
+        enabled: true,
+        runs: 200
+      }
+    }
+  },
+  networks: {
+    arbitrumSepolia: {
+      type: "http",
+      chainType: "l1",
+      url: process.env.ARBITRUM_SEPOLIA_RPC_URL || "https://sepolia-rollup.arbitrum.io/rpc",
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : []
+    }
+  }
+};
