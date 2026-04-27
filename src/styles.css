@@ -46,6 +46,11 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
@@ -614,6 +619,34 @@ button {
   font-size: clamp(30px, 5vw, 44px);
 }
 
+.tx-status {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(247, 198, 0, 0.45);
+  background: rgba(247, 198, 0, 0.08);
+  color: var(--yellow-soft);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.privacy-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.privacy-stack.compact {
+  margin: 14px 0;
+}
+
+.privacy-stack span {
+  display: block;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: #090909;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .rate-box {
   border: 1px solid var(--line);
   background: var(--yellow-dim);
@@ -867,32 +900,6 @@ input[type="range"] {
 
 .exposure-panel {
   display: grid;
-}
-
-.donut {
-  background:
-    radial-gradient(circle at center, #101010 0 52%, transparent 53%),
-    conic-gradient(var(--yellow) 0 65%, #f8f6ed 65% 100%);
-}
-
-.legend {
-  display: flex;
-  justify-content: center;
-  gap: 18px;
-  color: var(--muted);
-}
-
-.legend span::before {
-  content: "";
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  background: var(--yellow);
-  margin-right: 8px;
-}
-
-.legend span:last-child::before {
-  background: #f8f6ed;
 }
 
 .privacy-feed div {

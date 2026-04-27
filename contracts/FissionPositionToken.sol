@@ -34,4 +34,15 @@ contract FissionPositionToken is ERC7984 {
         Nox.allowThis(burned);
         return burned;
     }
+
+    function transferConfidentialByMarket(
+        address from,
+        address to,
+        euint256 amount
+    ) external onlyMarket returns (euint256) {
+        euint256 transferred = _transfer(from, to, amount);
+        Nox.allowThis(transferred);
+        Nox.allow(transferred, to);
+        return transferred;
+    }
 }

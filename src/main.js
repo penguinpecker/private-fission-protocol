@@ -1,4 +1,14 @@
 import './styles.css';
+import {
+  approveUSDC,
+  combinePTAndYT,
+  connectWallet as connectWalletOnchain,
+  decryptPortfolio,
+  fissionSY,
+  mintSY,
+  swapWithAmm
+} from './lib/fissionApi.js';
+import { FISSION_ADDRESSES } from './lib/addresses.js';
 
 const strategies = {
   pt: {
@@ -8,8 +18,8 @@ const strategies = {
     short: 'Buy PT below par and redeem at maturity for SY. Your entry size, balance, and exit are encrypted.',
     thesis: 'Best when you want predictable yield and do not want the market to see how large your principal position is. Fission stores PT exposure as confidential Nox handles.',
     risk: 'Lower upside, maturity dependent',
-    apy: '7.84%',
-    price: '0.974 SY',
+    execution: 'On-chain AMM',
+    price: 'Encrypted quote',
     token: 'PT-USDC-30D',
     color: 'yellow'
   },
@@ -20,8 +30,8 @@ const strategies = {
     short: 'Buy YT to isolate Aave USDC yield exposure. If realized yield rises, your YT position benefits.',
     thesis: 'Best when you are bullish on future yield and want leveraged yield exposure without exposing your bet. Your YT balance and AMM fill remain confidential.',
     risk: 'Higher volatility, can decay',
-    apy: '14.62%',
-    price: '0.082 SY',
+    execution: 'On-chain AMM',
+    price: 'Encrypted quote',
     token: 'YT-USDC-30D',
     color: 'white'
   },
@@ -32,8 +42,8 @@ const strategies = {
     short: 'Split SY into both PT and YT. Hold, rebalance, or sell either side through the private AMM.',
     thesis: 'Best when you want to enter the market privately, then choose whether to keep principal, sell yield, or trade both legs using encrypted balances.',
     risk: 'Flexible but more active',
-    apy: 'Market neutral',
-    price: '1.000 SY',
+    execution: 'Fission route',
+    price: '1 SY -> PT + YT',
     token: 'PT + YT',
     color: 'split'
   }
@@ -47,7 +57,10 @@ const state = {
   strategy: 'pt',
   action: 'buy',
   amount: '1,000',
-  slippage: 0.3
+  mintAmount: '10',
+  account: '',
+  txStatus: '',
+  portfolio: null
 };
 
 const markets = [
@@ -57,8 +70,8 @@ const markets = [
     asset: 'USDC',
     source: 'Aave V3 Arbitrum Sepolia',
     maturity: 'May 27, 2026',
-    tvl: '$284.6K',
-    implied: '8.42%',
+    market: FISSION_ADDRESSES.market,
+    adapter: FISSION_ADDRESSES.adapter,
     status: 'Live'
   }
 ];
@@ -84,20 +97,32 @@ function setScreen(screen) {
 
 function openModal(modal) {
   state.modal = modal;
+  state.txStatus = '';
   render();
 }
 
 function closeModal() {
   state.modal = null;
+  state.txStatus = '';
   render();
 }
 
-function connectWallet() {
-  state.wallet = true;
-  state.screen = 'markets';
-  state.modal = null;
-  toast('Wallet connected. Private markets unlocked.');
-  resetScroll();
+async function connectWallet() {
+  try {
+    state.txStatus = 'Requesting wallet connection...';
+    render();
+    const account = await connectWalletOnchain();
+    state.wallet = true;
+    state.account = account;
+    state.screen = 'markets';
+    state.modal = null;
+    state.txStatus = '';
+    toast('Wallet connected. Private markets unlocked.');
+    resetScroll();
+  } catch (error) {
+    state.txStatus = '';
+    toast(error.message || 'Wallet connection failed');
+  }
 }
 
 function toast(text) {
@@ -194,7 +219,7 @@ function shell(content) {
           <div class="top-actions">
             <button class="icon-btn" title="Confidentiality controls" data-modal="privacy">◉</button>
             <button class="wallet-btn" data-modal="${state.wallet ? 'account' : 'connect'}">
-              <span>${state.wallet ? '0x7d4...90f2' : 'Connect'}</span>
+              <span>${state.wallet ? shortAddress(state.account) : 'Connect'}</span>
             </button>
           </div>
         </header>
@@ -211,6 +236,11 @@ function pageTitle() {
   if (state.screen === 'markets') return 'Available Markets';
   if (state.screen === 'strategy') return strategies[state.strategy].name;
   return 'Encrypted Portfolio';
+}
+
+function shortAddress(address) {
+  if (!address) return 'Connected';
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
 function screenHome() {
@@ -281,23 +311,19 @@ function screenMarkets() {
           <div>
             <span class="status-pill">${market.status} · ${market.source}</span>
             <h2>${market.name}</h2>
-            <p>One confidential Pendle-style market backed by Aave USDC. Mint encrypted SY, split into confidential PT/YT, then trade any strategy through the AMM.</p>
+            <p>One deployed confidential Pendle-style market backed by Aave USDC. Mint encrypted SY, then open the PT, YT, or PT + YT strategy screen to trade through the on-chain confidential AMM.</p>
+            <div class="cta-row">
+              <button class="primary" data-screen="strategy">Open market</button>
+              <button class="secondary" data-modal="mint">Mint SY</button>
+            </div>
           </div>
           <div class="market-metrics">
-            ${metric('Confidential TVL', market.tvl, 'encrypted shares')}
-            ${metric('Implied APY', market.implied, '+0.37%')}
+            ${metric('Market contract', shortAddress(market.market), 'deployed')}
+            ${metric('Aave adapter', shortAddress(market.adapter), 'USDC reserve')}
             ${metric('Maturity', '30D', market.maturity)}
           </div>
         </div>
       `).join('')}
-
-      <div class="section-head">
-        <p class="eyebrow">Market strategies</p>
-        <h3>Select PT, YT, or full strip</h3>
-      </div>
-      <div class="strategy-grid">
-        ${strategyCards(true)}
-      </div>
     </section>
   `;
 }
@@ -312,7 +338,7 @@ function strategyCards(clickable) {
       <h4>${item.name}</h4>
       <p>${item.short}</p>
       <div class="strategy-meta">
-        <span>${item.apy}</span>
+        <span>${item.execution}</span>
         <span>${item.price}</span>
       </div>
       ${clickable ? '<button class="ghost">Open strategy</button>' : ''}
@@ -322,6 +348,7 @@ function strategyCards(clickable) {
 
 function screenStrategy() {
   const item = strategies[state.strategy];
+  const actionDisabled = state.strategy === 'pair' && state.action === 'swap';
   return `
     <section class="strategy-detail">
       <div class="detail-hero">
@@ -336,8 +363,8 @@ function screenStrategy() {
           </div>
         </div>
         <div class="detail-stats">
-          ${metric('Strategy APY', item.apy)}
-          ${metric('Market price', item.price)}
+          ${metric('Execution', item.execution)}
+          ${metric('Quote', item.price)}
           ${metric('Risk profile', item.risk)}
         </div>
       </div>
@@ -347,7 +374,7 @@ function screenStrategy() {
           <div class="panel-head">
             <div>
               <p class="eyebrow">Chart</p>
-          <h3>${item.name} payoff and market price</h3>
+          <h3>${item.name} payoff schematic</h3>
         </div>
         <button class="ghost" data-modal="chart">Chart details</button>
           </div>
@@ -373,20 +400,16 @@ function screenStrategy() {
           ${amountInput('Encrypted input', state.amount, inputTokenFor(item), 'amount')}
           <div class="swap-arrow">↓</div>
           <div class="amount-box output">
-            <span>Estimated private output</span>
+            <span>Private output</span>
             <div>
-              <strong>${estimateFor(state.strategy, state.action)}</strong>
+              <strong>Encrypted fill</strong>
               <b>${outputTokenFor(item)}</b>
             </div>
           </div>
-          <div class="trade-settings">
-            <label>
-              <span>Slippage</span>
-              <input type="range" min="0.1" max="1.5" step="0.1" value="${state.slippage}" data-range="slippage" />
-              <b>${state.slippage}%</b>
-            </label>
-          </div>
-          <button class="primary full" data-modal="trade">${state.action} with confidential AMM</button>
+          <button class="primary full" ${actionDisabled ? 'disabled' : 'data-modal="trade"'}>
+            ${actionDisabled ? 'Use PT or YT tabs to swap one leg' : `${state.action} with confidential AMM`}
+          </button>
+          ${state.txStatus ? `<div class="tx-status">${state.txStatus}</div>` : ''}
         </div>
       </div>
 
@@ -442,15 +465,6 @@ function outputTokenFor(item) {
   return item.token === 'PT + YT' ? 'YT-USDC' : 'SY-USDC';
 }
 
-function estimateFor(strategy, action) {
-  const table = {
-    pt: { buy: '1,026.69', swap: '974.21', sell: '973.80' },
-    yt: { buy: '12,184.20', swap: '81.74', sell: '82.06' },
-    pair: { buy: '1,000.00', swap: '1,000.00', sell: '998.40' }
-  };
-  return table[strategy][action];
-}
-
 function amountInput(label, value, token, key) {
   return `
     <label class="amount-box">
@@ -464,6 +478,18 @@ function amountInput(label, value, token, key) {
 }
 
 function screenPortfolio() {
+  const balances = state.portfolio
+    ? [
+        ['SY-USDC', formatEncryptedBalance(state.portfolio.sy), 'Confidential Aave-backed yield base'],
+        ['PT-USDC-30D', formatEncryptedBalance(state.portfolio.pt), 'Encrypted principal exposure'],
+        ['YT-USDC-30D', formatEncryptedBalance(state.portfolio.yt), 'Encrypted future yield exposure']
+      ]
+    : [
+        ['SY-USDC', 'Encrypted handle', 'Decrypt with your wallet to view'],
+        ['PT-USDC-30D', 'Encrypted handle', 'Decrypt with your wallet to view'],
+        ['YT-USDC-30D', 'Encrypted handle', 'Decrypt with your wallet to view']
+      ];
+
   return `
     <section class="portfolio-grid">
       <div class="panel balance-panel">
@@ -475,24 +501,24 @@ function screenPortfolio() {
           <button class="ghost" data-modal="decrypt">Decrypt</button>
         </div>
         <div class="position-list">
-          ${[
-            ['SY-USDC', '12,480.00', 'Confidential Aave-backed yield base'],
-            ['PT-USDC-30D', '8,100.00', 'Encrypted principal exposure'],
-            ['YT-USDC-30D', '4,380.00', 'Encrypted future yield exposure']
-          ].map(([token, amount, note]) => `
+          ${balances.map(([token, amount, note]) => `
             <div class="position-row">
               <div><b>${token}</b><small>${note}</small></div>
               <strong>${amount}</strong>
-              <span>Encrypted</span>
+              <span>${state.portfolio ? 'Decrypted locally' : 'Encrypted'}</span>
             </div>
           `).join('')}
         </div>
+        ${state.txStatus ? `<div class="tx-status">${state.txStatus}</div>` : ''}
       </div>
       <div class="panel exposure-panel">
-        <p class="eyebrow">Exposure</p>
-        <h3>Principal vs yield</h3>
-        <div class="donut"><span>65%</span></div>
-        <div class="legend"><span>PT principal</span><span>YT yield</span></div>
+        <p class="eyebrow">Confidentiality</p>
+        <h3>Only wallet-authorized balance reads</h3>
+        <div class="privacy-stack">
+          <span>SY/PT/YT balances stay as Nox handles on-chain.</span>
+          <span>Decryption happens through the connected wallet.</span>
+          <span>No public portfolio totals are shown.</span>
+        </div>
       </div>
     </section>
   `;
@@ -501,10 +527,11 @@ function screenPortfolio() {
 function modal(type) {
   const copy = {
     connect: ['Connect wallet', 'Connect to Arbitrum Sepolia to see available markets, choose PT/YT strategies, and trade through the private AMM.', 'Connect wallet', 'connect'],
-    account: ['Account', '0x7d4...90f2 is connected. Private portfolio decryption is available for this wallet.', 'Close', 'close'],
+    account: ['Account', `${shortAddress(state.account)} is connected. Private portfolio decryption is available for this wallet.`, 'Close', 'close'],
     privacy: ['Confidentiality controls', 'Fission encrypts strategy balances, swap input amounts, AMM outputs, and PT/YT position sizes with Nox handles. Only authorized viewers can decrypt.', 'Got it', 'close'],
     how: ['How Fission markets work', 'USDC enters a yield source and becomes confidential SY. SY can be split into encrypted PT and YT. PT targets fixed principal redemption; YT isolates variable future yield. Both trade through a confidential AMM.', 'Enter app', 'connect'],
-    chart: ['Chart details', 'The chart combines payoff shape and market price movement for the selected strategy. In production this would read live pool and oracle data.', 'Close', 'close'],
+    chart: ['Chart details', 'The chart is a strategy payoff schematic. Live swap execution is handled by the deployed confidential AMM without exposing public quote previews.', 'Close', 'close'],
+    mint: ['Mint confidential SY', 'Approve USDC to the deployed Aave adapter, then mint confidential SY into the Fission market. The USDC deposit is public; the resulting SY balance is confidential.', 'Approve + mint SY', 'tx'],
     trade: ['Confidential AMM trade', 'Your trade amount is encrypted before submission. The AMM updates your confidential SY, PT, or YT balances after execution.', 'Confirm trade', 'tx'],
     decrypt: ['Decrypt balances', 'Request a gasless Nox decryption for your SY, PT, and YT handles. Only this wallet can read them.', 'Decrypt now', 'tx']
   }[type];
@@ -516,6 +543,9 @@ function modal(type) {
         <div class="modal-icon">◈</div>
         <h2>${copy[0]}</h2>
         <p>${copy[1]}</p>
+        ${type === 'mint' ? amountInput('USDC amount', state.mintAmount, 'USDC', 'mintAmount') : ''}
+        ${type === 'trade' ? `<div class="privacy-stack compact"><span>${tradeRouteLabel()}</span><span>Amount encrypted before contract execution.</span></div>` : ''}
+        ${state.txStatus ? `<div class="tx-status">${state.txStatus}</div>` : ''}
         <div class="modal-actions">
           <button class="secondary" data-close>Cancel</button>
           <button class="primary" data-modal-action="${copy[3]}">${copy[2]}</button>
@@ -546,12 +576,11 @@ function render() {
     el.addEventListener('click', closeModal);
   });
   document.querySelectorAll('[data-modal-action]').forEach((el) => {
-    el.addEventListener('click', () => {
+    el.addEventListener('click', async () => {
       if (el.dataset.modalAction === 'connect') connectWallet();
       if (el.dataset.modalAction === 'close') closeModal();
       if (el.dataset.modalAction === 'tx') {
-        state.modal = null;
-        toast('Private AMM transaction prepared');
+        await executeModalTransaction();
       }
     });
   });
@@ -569,12 +598,89 @@ function render() {
       state[input.dataset.input] = input.value;
     });
   });
-  document.querySelectorAll('[data-range]').forEach((input) => {
-    input.addEventListener('input', () => {
-      state[input.dataset.range] = input.value;
+}
+
+async function executeModalTransaction() {
+  const modal = state.modal;
+  try {
+    if (modal === 'mint') {
+      state.txStatus = 'Approving USDC to the deployed Aave adapter...';
       render();
-    });
-  });
+      const approveHash = await approveUSDC(state.mintAmount);
+      state.txStatus = `Approval submitted: ${shortHash(approveHash)}. Minting confidential SY...`;
+      render();
+      const mintHash = await mintSY(state.mintAmount);
+      state.modal = null;
+      state.txStatus = '';
+      toast(`SY mint submitted: ${shortHash(mintHash)}`);
+      return;
+    }
+
+    if (modal === 'trade') {
+      state.txStatus = 'Encrypting amount with Nox and submitting AMM transaction...';
+      render();
+      const txHash = await executeStrategyTransaction();
+      state.modal = null;
+      state.txStatus = '';
+      toast(`Confidential trade submitted: ${shortHash(txHash)}`);
+      return;
+    }
+
+    if (modal === 'decrypt') {
+      state.txStatus = 'Requesting wallet-authorized Nox balance decryption...';
+      render();
+      state.portfolio = await decryptPortfolio(state.account);
+      state.modal = null;
+      state.txStatus = '';
+      toast('Balances decrypted locally');
+    }
+  } catch (error) {
+    state.txStatus = error.shortMessage || error.message || 'Transaction failed';
+    render();
+  }
+}
+
+async function executeStrategyTransaction() {
+  if (state.strategy === 'pair') {
+    if (state.action === 'buy') return fissionSY(state.amount);
+    if (state.action === 'sell') return combinePTAndYT(state.amount);
+    throw new Error('Use PT or YT tabs to swap one leg.');
+  }
+
+  if (state.strategy === 'pt') {
+    if (state.action === 'buy') return swapWithAmm('syToPt', state.amount);
+    if (state.action === 'sell') return swapWithAmm('ptToSy', state.amount);
+    return swapWithAmm('ptToSy', state.amount);
+  }
+
+  if (state.strategy === 'yt') {
+    if (state.action === 'buy') return swapWithAmm('syToYt', state.amount);
+    if (state.action === 'sell') return swapWithAmm('ytToSy', state.amount);
+    return swapWithAmm('ytToSy', state.amount);
+  }
+
+  throw new Error('Unknown strategy');
+}
+
+function tradeRouteLabel() {
+  const item = strategies[state.strategy];
+  return `${state.action.toUpperCase()} ${item.route} with ${state.amount} ${inputTokenFor(item)}`;
+}
+
+function shortHash(hash) {
+  if (!hash) return 'submitted';
+  return `${hash.slice(0, 10)}...${hash.slice(-6)}`;
+}
+
+function formatEncryptedBalance(value) {
+  try {
+    const raw = BigInt(value);
+    const whole = raw / 10n ** 18n;
+    const fraction = (raw % 10n ** 18n).toString().padStart(18, '0').slice(0, 4).replace(/0+$/, '');
+    return `${whole.toLocaleString()}${fraction ? `.${fraction}` : ''}`;
+  } catch {
+    return String(value);
+  }
 }
 
 render();

@@ -37,20 +37,20 @@ export async function approveUSDC(amount) {
     client: walletClient
   });
 
-  return usdc.write.approve([FISSION_ADDRESSES.market, parseUnits(amount, 6)], { account });
+  return usdc.write.approve([FISSION_ADDRESSES.adapter, parseUnits(cleanAmount(amount), 6)], { account });
 }
 
 export async function mintSY(amount) {
   const { walletClient } = createClients();
   const [account] = await walletClient.getAddresses();
   const market = getMarketContract(walletClient);
-  return market.write.mintSY([parseUnits(amount, 6)], { account });
+  return market.write.mintSY([parseUnits(cleanAmount(amount), 6)], { account });
 }
 
 export async function encryptAmount(amount, applicationContract = FISSION_ADDRESSES.market) {
   const { walletClient } = createClients();
   const handleClient = await createViemHandleClient(walletClient);
-  return handleClient.encryptInput(parseUnits(amount, 18), 'uint256', applicationContract);
+  return handleClient.encryptInput(parseUnits(cleanAmount(amount), 18), 'uint256', applicationContract);
 }
 
 export async function fissionSY(amount) {
@@ -59,6 +59,14 @@ export async function fissionSY(amount) {
   const { handle, handleProof } = await encryptAmount(amount);
   const market = getMarketContract(walletClient);
   return market.write.fission([handle, handleProof], { account });
+}
+
+export async function combinePTAndYT(amount) {
+  const { walletClient } = createClients();
+  const [account] = await walletClient.getAddresses();
+  const { handle, handleProof } = await encryptAmount(amount);
+  const market = getMarketContract(walletClient);
+  return market.write.combine([handle, handleProof], { account });
 }
 
 export async function swapWithAmm(route, amount) {
@@ -80,6 +88,20 @@ export async function swapWithAmm(route, amount) {
   return market.write[method]([handle, handleProof], { account });
 }
 
+export async function decryptPortfolio(account) {
+  const entries = await Promise.all([
+    decryptConfidentialBalance(FISSION_ADDRESSES.sy, account),
+    decryptConfidentialBalance(FISSION_ADDRESSES.pt, account),
+    decryptConfidentialBalance(FISSION_ADDRESSES.yt, account)
+  ]);
+
+  return {
+    sy: entries[0],
+    pt: entries[1],
+    yt: entries[2]
+  };
+}
+
 export async function decryptConfidentialBalance(tokenAddress, account) {
   const { publicClient, walletClient } = createClients();
   const token = getContract({
@@ -90,6 +112,10 @@ export async function decryptConfidentialBalance(tokenAddress, account) {
   const balanceHandle = await token.read.confidentialBalanceOf([account]);
   const handleClient = await createViemHandleClient(walletClient);
   return handleClient.decrypt(balanceHandle);
+}
+
+function cleanAmount(amount) {
+  return String(amount).replace(/,/g, '').trim();
 }
 
 function getMarketContract(walletClient) {
