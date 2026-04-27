@@ -13,9 +13,9 @@ export const EXTERNAL_ADDRESSES = {
 };
 
 export const FISSION_ADDRESSES = {
-  market: '',
-  sy: '',
-  pt: '',
-  yt: '',
-  adapter: ''
+  market: '0x98F76831c0b1e8f0929C82cC0Aa18B1156E1C47A',
+  sy: '0x12dF6bBeF48E61735379709Eb26a6AbC76507203',
+  pt: '0x85cf228a0C4a96997815fFd94E8767b9c98cf73b',
+  yt: '0xbDaE0CfE615197E88Fdf80A101676cE619355a31',
+  adapter: '0xCCccfAe05E18b8f1B9c74285E6FA9b12EbEa1885'
 };

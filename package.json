@@ -11,7 +11,7 @@
     "build": "vite build",
     "compile": "hardhat compile",
     "check:wallet": "node scripts/check-wallet.js",
-    "deploy:arbitrum-sepolia": "hardhat run scripts/deploy.js --network arbitrumSepolia",
+    "deploy:arbitrum-sepolia": "npm run compile && node scripts/deploy.js",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
