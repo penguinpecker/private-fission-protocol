@@ -2,13 +2,9 @@ node_modules/
 dist/
 *.png
 .DS_Store
-
-# Local secrets
 .env
 .env.*
 !.env.example
-
-# Contract build/deploy output
 artifacts/
 cache/
 out/
@@ -16,10 +12,7 @@ broadcast/
 typechain-types/
 ignition/deployments/
 deployments/
-
-# Logs and local tool state
 *.log
 .vscode/
 .idea/
 .vercel/
-.vercel
