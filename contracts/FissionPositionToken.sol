@@ -25,12 +25,14 @@ contract FissionPositionToken is ERC7984 {
     function mintConfidential(address to, euint256 amount) external onlyMarket returns (euint256) {
         euint256 minted = _mint(to, amount);
         Nox.allow(minted, to);
+        Nox.allow(minted, market);
         Nox.allowThis(minted);
         return minted;
     }
 
     function burnConfidential(address from, euint256 amount) external onlyMarket returns (euint256) {
         euint256 burned = _burn(from, amount);
+        Nox.allow(burned, market);
         Nox.allowThis(burned);
         return burned;
     }
@@ -42,6 +44,7 @@ contract FissionPositionToken is ERC7984 {
     ) external onlyMarket returns (euint256) {
         euint256 transferred = _transfer(from, to, amount);
         Nox.allowThis(transferred);
+        Nox.allow(transferred, market);
         Nox.allow(transferred, to);
         return transferred;
     }

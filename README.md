@@ -20,9 +20,9 @@ Open `http://127.0.0.1:3000/`.
 
 ## Contracts
 
-The initial contract scaffold is under `contracts/`.
+The contract prototype is under `contracts/`.
 
-- `FissionMarket.sol`: coordinates SY minting, SY -> PT + YT fission, recombination, and private AMM routes.
+- `FissionMarket.sol`: coordinates SY minting, SY -> PT + YT fission, recombination, owner-only encrypted AMM liquidity top-ups, and private AMM routes.
 - `FissionPositionToken.sol`: ERC-7984 confidential token used for SY, PT, and YT balances.
 - `AaveUSDCYieldAdapter.sol`: connects the market reserve to Aave V3 USDC on Arbitrum Sepolia.
 - `FissionAddresses.sol`: pinned Nox and Aave Arbitrum Sepolia addresses.
@@ -34,6 +34,17 @@ npm run compile
 ```
 
 Deployment uses `.env` values copied from `.env.example`. `.env`, build artifacts, caches, broadcasts, and generated deployment files are ignored by git.
+
+Deploy and top up confidential AMM reserves:
+
+```bash
+npm run deploy:arbitrum-sepolia
+npm run add:amm-liquidity -- sy 250000
+npm run add:amm-liquidity -- pt 250000
+npm run add:amm-liquidity -- yt 1000000
+```
+
+Users need Arbitrum Sepolia USDC in their wallet before minting SY, because `mintSY` transfers real USDC into the Aave-backed adapter before confidential SY is minted.
 
 ## Frontend API Bindings
 

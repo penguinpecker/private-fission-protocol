@@ -18,14 +18,20 @@ contract FissionMarket {
     FissionPositionToken public immutable pt;
     FissionPositionToken public immutable yt;
     AaveUSDCYieldAdapter public immutable adapter;
+    address public immutable owner;
 
     event PublicDeposit(address indexed user, uint256 amount);
     event ConfidentialFission(address indexed user, bytes32 encryptedAmount);
     event ConfidentialCombine(address indexed user, bytes32 encryptedAmount);
     event ConfidentialSwap(address indexed user, uint8 indexed route, bytes32 encryptedAmountIn);
     event ConfidentialAmmSeeded(bytes32 syReserve, bytes32 ptReserve, bytes32 ytReserve);
+    event ConfidentialAmmLiquidityAdded(address indexed provider, uint8 indexed reserve, bytes32 encryptedAmount);
+
+    error OnlyOwner();
+    error InvalidReserve();
 
     constructor(uint256 maturity_) {
+        owner = msg.sender;
         maturity = maturity_;
         sy = new FissionPositionToken("Fission SY USDC", "SY-USDC", address(this));
         pt = new FissionPositionToken("Fission PT USDC 30D", "PT-USDC-30D", address(this));
@@ -47,6 +53,11 @@ contract FissionMarket {
         );
     }
 
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert OnlyOwner();
+        _;
+    }
+
     function mintSY(uint256 clearAmount) external {
         adapter.pullAndSupply(msg.sender, clearAmount);
         euint256 amount = Nox.toEuint256(clearAmount * USDC_TO_SY_SCALE);
@@ -59,6 +70,9 @@ contract FissionMarket {
         bytes calldata proof
     ) external {
         euint256 amount = Nox.fromExternal(encryptedAmount, proof);
+        Nox.allow(amount, address(sy));
+        Nox.allow(amount, address(pt));
+        Nox.allow(amount, address(yt));
         sy.burnConfidential(msg.sender, amount);
         pt.mintConfidential(msg.sender, amount);
         yt.mintConfidential(msg.sender, amount);
@@ -70,10 +84,23 @@ contract FissionMarket {
         bytes calldata proof
     ) external {
         euint256 amount = Nox.fromExternal(encryptedAmount, proof);
+        Nox.allow(amount, address(pt));
+        Nox.allow(amount, address(yt));
+        Nox.allow(amount, address(sy));
         pt.burnConfidential(msg.sender, amount);
         yt.burnConfidential(msg.sender, amount);
         sy.mintConfidential(msg.sender, amount);
         emit ConfidentialCombine(msg.sender, euint256.unwrap(amount));
+    }
+
+    function addAmmLiquidity(
+        uint8 reserve,
+        externalEuint256 encryptedAmount,
+        bytes calldata proof
+    ) external onlyOwner {
+        euint256 amount = Nox.fromExternal(encryptedAmount, proof);
+        _mintAmmReserve(reserve, amount);
+        emit ConfidentialAmmLiquidityAdded(msg.sender, reserve, euint256.unwrap(amount));
     }
 
     function swapSYForPT(
@@ -81,6 +108,7 @@ contract FissionMarket {
         bytes calldata proof
     ) external {
         euint256 amountIn = Nox.fromExternal(encryptedAmount, proof);
+        Nox.allow(amountIn, address(sy));
         euint256 transferredIn = sy.transferConfidentialByMarket(msg.sender, address(this), amountIn);
         euint256 amountOut = _constantProductOut(
             transferredIn,
@@ -96,6 +124,7 @@ contract FissionMarket {
         bytes calldata proof
     ) external {
         euint256 amountIn = Nox.fromExternal(encryptedAmount, proof);
+        Nox.allow(amountIn, address(sy));
         euint256 transferredIn = sy.transferConfidentialByMarket(msg.sender, address(this), amountIn);
         euint256 amountOut = _constantProductOut(
             transferredIn,
@@ -111,6 +140,7 @@ contract FissionMarket {
         bytes calldata proof
     ) external {
         euint256 amountIn = Nox.fromExternal(encryptedAmount, proof);
+        Nox.allow(amountIn, address(pt));
         euint256 transferredIn = pt.transferConfidentialByMarket(msg.sender, address(this), amountIn);
         euint256 amountOut = _constantProductOut(
             transferredIn,
@@ -126,6 +156,7 @@ contract FissionMarket {
         bytes calldata proof
     ) external {
         euint256 amountIn = Nox.fromExternal(encryptedAmount, proof);
+        Nox.allow(amountIn, address(yt));
         euint256 transferredIn = yt.transferConfidentialByMarket(msg.sender, address(this), amountIn);
         euint256 amountOut = _constantProductOut(
             transferredIn,
@@ -134,6 +165,21 @@ contract FissionMarket {
         );
         sy.transferConfidentialByMarket(address(this), msg.sender, amountOut);
         emit ConfidentialSwap(msg.sender, 4, euint256.unwrap(transferredIn));
+    }
+
+    function _mintAmmReserve(uint8 reserve, euint256 amount) internal {
+        if (reserve == 0) {
+            Nox.allow(amount, address(sy));
+            sy.mintConfidential(address(this), amount);
+        } else if (reserve == 1) {
+            Nox.allow(amount, address(pt));
+            pt.mintConfidential(address(this), amount);
+        } else if (reserve == 2) {
+            Nox.allow(amount, address(yt));
+            yt.mintConfidential(address(this), amount);
+        } else {
+            revert InvalidReserve();
+        }
     }
 
     function _constantProductOut(

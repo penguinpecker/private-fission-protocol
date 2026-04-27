@@ -11,6 +11,7 @@
     "build": "vite build",
     "compile": "hardhat compile",
     "check:wallet": "node scripts/check-wallet.js",
+    "add:amm-liquidity": "node scripts/add-amm-liquidity.js",
     "deploy:arbitrum-sepolia": "npm run compile && node scripts/deploy.js",
     "preview": "vite preview --host 127.0.0.1"
   },

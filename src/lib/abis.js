@@ -48,6 +48,17 @@ export const fissionMarketAbi = [
   },
   {
     type: 'function',
+    name: 'addAmmLiquidity',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'reserve', type: 'uint8' },
+      { name: 'encryptedAmount', type: 'bytes32' },
+      { name: 'proof', type: 'bytes' }
+    ],
+    outputs: []
+  },
+  {
+    type: 'function',
     name: 'swapSYForPT',
     stateMutability: 'nonpayable',
     inputs: [
