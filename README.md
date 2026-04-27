@@ -1,6 +1,6 @@
-# Fission Protocol Frontend
+# Private Fission Protocol
 
-Prototype frontend for Fission Protocol, a confidential Pendle-style yield market.
+Prototype frontend for Private Fission Protocol, a confidential Pendle-style yield market.
 
 ## Run Locally
 
