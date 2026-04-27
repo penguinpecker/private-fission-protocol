@@ -15,6 +15,7 @@ out/
 broadcast/
 typechain-types/
 ignition/deployments/
+deployments/
 
 # Logs and local tool state
 *.log
