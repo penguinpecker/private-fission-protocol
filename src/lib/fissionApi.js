@@ -67,6 +67,13 @@ const RELAY_TYPES = {
     { name: 'clearUsdc', type: 'uint256' },
     { name: 'nonce', type: 'uint256' },
     { name: 'deadline', type: 'uint256' }
+  ],
+  RedeemYT: [
+    { name: 'actor', type: 'address' },
+    { name: 'encryptedAmount', type: 'bytes32' },
+    { name: 'proofHash', type: 'bytes32' },
+    { name: 'nonce', type: 'uint256' },
+    { name: 'deadline', type: 'uint256' }
   ]
 };
 
@@ -217,6 +224,79 @@ export async function settleSYRedeem({ id, eqHandle }) {
   const { decryptionProof } = await handleClient.publicDecrypt(eqHandle);
   const market = getMarketContract(walletClient);
   return market.write.settleSYRedeem([id, decryptionProof], { account });
+}
+
+export async function readMaturityYieldStatus() {
+  const { publicClient } = createClients();
+  const market = getContract({
+    address: FISSION_ADDRESSES.market,
+    abi: fissionMarketAbi,
+    client: publicClient
+  });
+  const [taken, total, distributed] = await Promise.all([
+    market.read.maturitySnapshotTaken(),
+    market.read.maturityYieldUsdc(),
+    market.read.yieldDistributed()
+  ]);
+  return { taken, total, distributed };
+}
+
+export async function snapshotMaturity() {
+  const { walletClient } = createClients();
+  const [account] = await walletClient.getAddresses();
+  const market = getMarketContract(walletClient);
+  return market.write.snapshotMaturity({ account });
+}
+
+export async function redeemYT(amount) {
+  const { publicClient, walletClient } = createClients();
+  const [account] = await walletClient.getAddresses();
+  const { handle, handleProof } = await encryptAmount(amount);
+  const market = getMarketContract(walletClient);
+  const txHash = await market.write.redeemYT([handle, handleProof], { account });
+  const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+  return parseYTRedeemTicket(receipt, txHash);
+}
+
+export async function settleYTRedeem({ id, yieldHandle }) {
+  const { walletClient } = createClients();
+  const [account] = await walletClient.getAddresses();
+  const handleClient = await createViemHandleClient(walletClient);
+  const { decryptionProof } = await handleClient.publicDecrypt(yieldHandle);
+  const market = getMarketContract(walletClient);
+  return market.write.settleYTRedeem([id, decryptionProof], { account });
+}
+
+export async function listPendingYTRedeemsForAccount(account) {
+  const { publicClient } = createClients();
+  const market = getContract({
+    address: FISSION_ADDRESSES.market,
+    abi: fissionMarketAbi,
+    client: publicClient
+  });
+  const total = await market.read.nextYTRedeemId();
+  const open = [];
+  for (let i = 1n; i <= total; i++) {
+    const r = await market.read.ytRedeemRequests([i]);
+    const [user, yieldHandle, settled] = r;
+    if (settled) continue;
+    if (user.toLowerCase() !== account.toLowerCase()) continue;
+    open.push({ id: i, yieldHandle });
+  }
+  return open;
+}
+
+function parseYTRedeemTicket(receipt, txHash) {
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== FISSION_ADDRESSES.market.toLowerCase()) continue;
+    try {
+      const decoded = decodeEventLog({ abi: fissionMarketAbi, data: log.data, topics: log.topics });
+      if (decoded.eventName === 'YTRedeemRequested') {
+        return { txHash, id: decoded.args.id, yieldHandle: decoded.args.yieldHandle };
+      }
+    } catch {}
+  }
+  throw new Error('YT redeem did not emit YTRedeemRequested');
 }
 
 export async function swapWithAmm(route, amount, minAmountOut = '0') {
@@ -402,6 +482,34 @@ export async function signRelayedMintSY(clearAmount, deadline = defaultDeadline(
   };
   const signature = await signTypedIntent('MintSY', message);
   return { ...message, signature };
+}
+
+export async function signRelayedRedeemYT(amount, deadline = defaultDeadline()) {
+  const { walletClient } = createClients();
+  const [actor] = await walletClient.getAddresses();
+  const { handle, handleProof } = await encryptAmount(amount);
+  const nonce = await readActorNonce(actor);
+  const message = {
+    actor,
+    encryptedAmount: handle,
+    proofHash: keccak256(handleProof),
+    nonce,
+    deadline
+  };
+  const signature = await signTypedIntent('RedeemYT', message);
+  return { actor, encryptedAmount: handle, proof: handleProof, nonce, deadline, signature };
+}
+
+export async function submitRelayedRedeemYT(intent) {
+  const { publicClient, walletClient } = createClients();
+  const [submitter] = await walletClient.getAddresses();
+  const market = getMarketContract(walletClient);
+  const txHash = await market.write.relayedRedeemYT(
+    [intent.actor, intent.encryptedAmount, intent.proof, intent.nonce, intent.deadline, intent.signature],
+    { account: submitter }
+  );
+  const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+  return parseYTRedeemTicket(receipt, txHash);
 }
 
 export async function signRelayedRequestSYRedeem(clearUsdc, deadline = defaultDeadline()) {

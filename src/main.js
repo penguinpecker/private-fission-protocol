@@ -6,19 +6,26 @@ import {
   decryptPortfolio,
   fissionSY,
   listPendingRedeemsForAccount,
+  listPendingYTRedeemsForAccount,
   mintSY,
   readMaturity,
+  readMaturityYieldStatus,
   readUSDCAllowance,
   redeemPT,
+  redeemYT,
   requestSYRedeem,
   settleSYRedeem,
+  settleYTRedeem,
   signRelayedCombine,
   signRelayedFission,
   signRelayedRedeemPT,
+  signRelayedRedeemYT,
   signRelayedSwap,
+  snapshotMaturity,
   submitRelayedCombine,
   submitRelayedFission,
   submitRelayedRedeemPT,
+  submitRelayedRedeemYT,
   submitRelayedSwap,
   swapWithAmm
 } from './lib/fissionApi.js';
@@ -82,6 +89,10 @@ const state = {
   maturity: null,
   pendingRedeem: null,
   pendingRedeems: [],
+  pendingYTRedeem: null,
+  pendingYTRedeems: [],
+  yieldStatus: null,
+  redeemYtAmount: '10',
   hasUsdcApproval: false
 };
 
@@ -171,6 +182,17 @@ function refreshPostConnectState() {
     if (!state.pendingRedeem && redeems.length) {
       state.pendingRedeem = redeems[redeems.length - 1];
     }
+    render();
+  }).catch(() => {});
+  listPendingYTRedeemsForAccount(state.account).then((redeems) => {
+    state.pendingYTRedeems = redeems;
+    if (!state.pendingYTRedeem && redeems.length) {
+      state.pendingYTRedeem = redeems[redeems.length - 1];
+    }
+    render();
+  }).catch(() => {});
+  readMaturityYieldStatus().then((status) => {
+    state.yieldStatus = status;
     render();
   }).catch(() => {});
 }
@@ -493,6 +515,7 @@ function screenStrategy() {
             ${actionDisabled ? 'Market matured · use redeem' : `${state.action} with confidential AMM`}
           </button>
           ${isMatured() && state.strategy === 'pt' ? '<button class="secondary full" data-modal="redeem-pt">Redeem PT 1:1 for SY</button>' : ''}
+          ${isMatured() && state.strategy === 'yt' ? renderYTRedeemControls() : ''}
           <button class="ghost full" data-modal="redeem-sy">Redeem SY for USDC</button>
           ${state.txStatus ? `<div class="tx-status">${state.txStatus}</div>` : ''}
         </div>
@@ -514,6 +537,15 @@ function screenStrategy() {
       </div>
     </section>
   `;
+}
+
+function renderYTRedeemControls() {
+  const status = state.yieldStatus;
+  if (!status) return '';
+  if (!status.taken) {
+    return '<button class="secondary full" data-modal-action="snapshot-maturity">Snapshot maturity yield</button>';
+  }
+  return '<button class="secondary full" data-modal="redeem-yt">Redeem YT for yield USDC</button>';
 }
 
 function bigChart(kind) {
@@ -636,7 +668,8 @@ function modal(type) {
     trade: ['Confidential AMM trade', 'Your trade amount is encrypted before submission. A 30 bps fee accrues to LPs. If the encrypted fill falls below your slippage minimum the input is refunded — both branches execute as encrypted no-ops so observers cannot tell which path ran.', 'Confirm trade', 'tx'],
     decrypt: ['Decrypt balances', 'Request a gasless Nox decryption for your SY, PT, and YT handles. Only this wallet can read them.', 'Decrypt now', 'tx'],
     'redeem-pt': ['Redeem PT for SY', 'After maturity, every PT redeems 1:1 for confidential SY. Both legs stay encrypted; only the fact a redemption occurred is public.', 'Redeem PT', 'tx'],
-    'redeem-sy': ['Redeem SY for USDC', 'Step 1 burns your confidential SY and stakes a Nox attestation that the burn matched the requested USDC amount. Step 2 settles the redemption once the Nox network signs the attestation. The USDC amount you redeem is public — converting back to a public asset reveals that exit size.', 'Submit redeem request', 'tx']
+    'redeem-sy': ['Redeem SY for USDC', 'Step 1 burns your confidential SY and stakes a Nox attestation that the burn matched the requested USDC amount. Step 2 settles the redemption once the Nox network signs the attestation. The USDC amount you redeem is public — converting back to a public asset reveals that exit size.', 'Submit redeem request', 'tx'],
+    'redeem-yt': ['Redeem YT for yield', 'Burn YT to claim your pro-rata slice of the Aave-side yield. The yield USDC paid out is public, which by itself reveals your share of total YT. Two-step like SY redemption: burn now, settle once the Nox attestation signs.', 'Submit YT redeem', 'tx']
   }[type];
 
   return `
@@ -650,11 +683,13 @@ function modal(type) {
         ${type === 'redeem-pt' ? amountInput('PT amount', state.redeemPtAmount, 'PT-USDC-30D', 'redeemPtAmount') : ''}
         ${type === 'redeem-sy' ? denominationPicker('USDC denomination', state.redeemUsdcAmount, 'USDC', 'redeemUsdcAmount') : ''}
         ${type === 'redeem-sy' && state.pendingRedeem ? `<div class="privacy-stack compact"><span>Pending request id ${state.pendingRedeem.id}</span><span>Settle once the Nox attestation is fetched.</span></div>` : ''}
+        ${type === 'redeem-yt' ? amountInput('YT amount', state.redeemYtAmount, 'YT-USDC-30D', 'redeemYtAmount') : ''}
+        ${type === 'redeem-yt' && state.pendingYTRedeem ? `<div class="privacy-stack compact"><span>Pending YT id ${state.pendingYTRedeem.id}</span><span>Settle to claim USDC yield.</span></div>` : ''}
         ${type === 'trade' ? `<div class="privacy-stack compact"><span>${tradeRouteLabel()}</span><span>Amount encrypted before contract execution.</span></div>` : ''}
         ${state.txStatus ? `<div class="tx-status">${state.txStatus}</div>` : ''}
         <div class="modal-actions">
           <button class="secondary" data-close>Cancel</button>
-          ${type === 'redeem-sy' && state.pendingRedeem ? '<button class="primary" data-modal-action="settle-redeem">Settle redemption</button>' : `<button class="primary" data-modal-action="${copy[3]}">${copy[2]}</button>`}
+          ${type === 'redeem-sy' && state.pendingRedeem ? '<button class="primary" data-modal-action="settle-redeem">Settle redemption</button>' : type === 'redeem-yt' && state.pendingYTRedeem ? '<button class="primary" data-modal-action="settle-yt-redeem">Settle YT redemption</button>' : `<button class="primary" data-modal-action="${copy[3]}">${copy[2]}</button>`}
         </div>
       </div>
     </div>
@@ -690,6 +725,12 @@ function render() {
       }
       if (el.dataset.modalAction === 'settle-redeem') {
         await settlePendingRedeem();
+      }
+      if (el.dataset.modalAction === 'settle-yt-redeem') {
+        await settlePendingYTRedeem();
+      }
+      if (el.dataset.modalAction === 'snapshot-maturity') {
+        await runSnapshotMaturity();
       }
       if (el.dataset.modalAction === 'toggle-relay') {
         state.useRelay = !state.useRelay;
@@ -782,6 +823,18 @@ async function executeModalTransaction() {
       render();
       return;
     }
+
+    if (modal === 'redeem-yt') {
+      state.txStatus = 'Burning encrypted YT and computing yield share...';
+      render();
+      const ticket = state.useRelay
+        ? await submitRelayedRedeemYT(await signRelayedRedeemYT(state.redeemYtAmount))
+        : await redeemYT(state.redeemYtAmount);
+      state.pendingYTRedeem = ticket;
+      state.txStatus = `YT burn submitted: ${shortHash(ticket.txHash)}. Settle once attestation is signed.`;
+      render();
+      return;
+    }
   } catch (error) {
     state.txStatus = error.shortMessage || error.message || 'Transaction failed';
     render();
@@ -796,11 +849,45 @@ async function settlePendingRedeem() {
     const txHash = await settleSYRedeem(state.pendingRedeem);
     const settled = state.pendingRedeem;
     state.pendingRedeem = null;
+    state.pendingRedeems = state.pendingRedeems.filter((r) => r.id !== settled.id);
     state.modal = null;
     state.txStatus = '';
     toast(`USDC redeemed (${settled.clearUsdc}): ${shortHash(txHash)}`);
   } catch (error) {
     state.txStatus = error.shortMessage || error.message || 'Settle failed';
+    render();
+  }
+}
+
+async function settlePendingYTRedeem() {
+  if (!state.pendingYTRedeem) return;
+  try {
+    state.txStatus = 'Fetching Nox attestation and settling YT yield...';
+    render();
+    const txHash = await settleYTRedeem(state.pendingYTRedeem);
+    const settled = state.pendingYTRedeem;
+    state.pendingYTRedeem = null;
+    state.pendingYTRedeems = state.pendingYTRedeems.filter((r) => r.id !== settled.id);
+    state.modal = null;
+    state.txStatus = '';
+    toast(`YT yield settled: ${shortHash(txHash)}`);
+    readMaturityYieldStatus().then((s) => { state.yieldStatus = s; render(); }).catch(() => {});
+  } catch (error) {
+    state.txStatus = error.shortMessage || error.message || 'Settle failed';
+    render();
+  }
+}
+
+async function runSnapshotMaturity() {
+  try {
+    state.txStatus = 'Snapshotting maturity yield...';
+    render();
+    const txHash = await snapshotMaturity();
+    state.txStatus = '';
+    toast(`Snapshot submitted: ${shortHash(txHash)}`);
+    readMaturityYieldStatus().then((s) => { state.yieldStatus = s; render(); }).catch(() => {});
+  } catch (error) {
+    state.txStatus = error.shortMessage || error.message || 'Snapshot failed';
     render();
   }
 }
