@@ -305,6 +305,23 @@ export async function removeLiquiditySYPT(lpAmount) {
   return market.write.removeLiquiditySYPT([lp.handle, lp.handleProof], { account });
 }
 
+export async function addLiquiditySYYT(syAmount, ytAmount) {
+  const { walletClient } = createClients();
+  const [account] = await walletClient.getAddresses();
+  const sy = await encryptAmount(syAmount);
+  const yt = await encryptAmount(ytAmount);
+  const market = getMarketContract(walletClient);
+  return market.write.addLiquiditySYYT([sy.handle, sy.handleProof, yt.handle, yt.handleProof], { account });
+}
+
+export async function removeLiquiditySYYT(lpAmount) {
+  const { walletClient } = createClients();
+  const [account] = await walletClient.getAddresses();
+  const lp = await encryptAmount(lpAmount);
+  const market = getMarketContract(walletClient);
+  return market.write.removeLiquiditySYYT([lp.handle, lp.handleProof], { account });
+}
+
 export async function decryptLPSYPT(account) {
   const { publicClient, walletClient } = createClients();
   const vault = getContract({

@@ -1,6 +1,7 @@
 import './styles.css';
 import {
   addLiquiditySYPT,
+  addLiquiditySYYT,
   adminAddAmmLiquidity,
   adminHarvestAaveYield,
   approveUSDC,
@@ -19,6 +20,7 @@ import {
   redeemPT,
   redeemYT,
   removeLiquiditySYPT,
+  removeLiquiditySYYT,
   requestSYRedeem,
   settleSYRedeem,
   settleYTRedeem,
@@ -107,6 +109,7 @@ const state = {
   principalDeposited: 0n,
   lpSyAmount: '1000',
   lpPtAmount: '1026',
+  lpYtAmount: '12000',
   lpRemoveAmount: '0'
 };
 
@@ -544,6 +547,8 @@ function screenStrategy() {
           <button class="ghost full" data-modal="redeem-sy">Redeem SY for USDC</button>
           ${state.strategy === 'pt' && !isMatured() ? '<button class="ghost full" data-modal="lp-add">Add SY/PT liquidity</button>' : ''}
           ${state.strategy === 'pt' && !isMatured() ? '<button class="ghost full" data-modal="lp-remove">Remove SY/PT liquidity</button>' : ''}
+          ${state.strategy === 'yt' && !isMatured() ? '<button class="ghost full" data-modal="lp-add-yt">Add SY/YT liquidity</button>' : ''}
+          ${state.strategy === 'yt' && !isMatured() ? '<button class="ghost full" data-modal="lp-remove-yt">Remove SY/YT liquidity</button>' : ''}
           ${state.txStatus ? `<div class="tx-status">${state.txStatus}</div>` : ''}
         </div>
       </div>
@@ -811,7 +816,9 @@ function modal(type) {
     'redeem-sy': ['Redeem SY for USDC', 'Step 1 burns your confidential SY and stakes a Nox attestation that the burn matched the requested USDC amount. Step 2 settles the redemption once the Nox network signs the attestation. The USDC amount you redeem is public — converting back to a public asset reveals that exit size.', 'Submit redeem request', 'tx'],
     'redeem-yt': ['Redeem YT for yield', 'Burn YT to claim your pro-rata slice of the Aave-side yield. The yield USDC paid out is public, which by itself reveals your share of total YT. Two-step like SY redemption: burn now, settle once the Nox attestation signs.', 'Submit YT redeem', 'tx'],
     'lp-add': ['Add SY/PT liquidity', 'Deposit encrypted SY and PT into the AMM in any ratio; the contract mints LP proportional to the limiting side and refunds the over-supplied side. LP tokens accrue swap-fee value as the pool grows.', 'Add liquidity', 'tx'],
-    'lp-remove': ['Remove SY/PT liquidity', 'Burn LP tokens to withdraw a proportional share of the SY and PT reserves at the current pool ratio. All amounts stay encrypted.', 'Remove liquidity', 'tx']
+    'lp-remove': ['Remove SY/PT liquidity', 'Burn LP tokens to withdraw a proportional share of the SY and PT reserves at the current pool ratio. All amounts stay encrypted.', 'Remove liquidity', 'tx'],
+    'lp-add-yt': ['Add SY/YT liquidity', 'Deposit encrypted SY and YT into the AMM. Same ratio-aware mint logic as the SY/PT pool.', 'Add liquidity', 'tx'],
+    'lp-remove-yt': ['Remove SY/YT liquidity', 'Burn LP tokens to withdraw a proportional share of the SY and YT reserves.', 'Remove liquidity', 'tx']
   }[type];
 
   return `
@@ -829,6 +836,9 @@ function modal(type) {
         ${type === 'lp-add' ? amountInput('SY amount', state.lpSyAmount, 'SY-USDC', 'lpSyAmount') : ''}
         ${type === 'lp-add' ? amountInput('PT amount', state.lpPtAmount, 'PT-USDC-30D', 'lpPtAmount') : ''}
         ${type === 'lp-remove' ? amountInput('LP amount', state.lpRemoveAmount, 'LP-SY-PT', 'lpRemoveAmount') : ''}
+        ${type === 'lp-add-yt' ? amountInput('SY amount', state.lpSyAmount, 'SY-USDC', 'lpSyAmount') : ''}
+        ${type === 'lp-add-yt' ? amountInput('YT amount', state.lpYtAmount, 'YT-USDC-30D', 'lpYtAmount') : ''}
+        ${type === 'lp-remove-yt' ? amountInput('LP amount', state.lpRemoveAmount, 'LP-SY-YT', 'lpRemoveAmount') : ''}
         ${type === 'redeem-yt' && state.pendingYTRedeem ? `<div class="privacy-stack compact"><span>Pending YT id ${state.pendingYTRedeem.id}</span><span>Settle to claim USDC yield.</span></div>` : ''}
         ${type === 'trade' ? `<div class="privacy-stack compact"><span>${tradeRouteLabel()}</span><span>Amount encrypted before contract execution.</span></div>` : ''}
         ${state.txStatus ? `<div class="tx-status">${state.txStatus}</div>` : ''}
@@ -1010,6 +1020,26 @@ async function executeModalTransaction() {
       state.txStatus = 'Encrypting LP and removing liquidity...';
       render();
       const txHash = await removeLiquiditySYPT(state.lpRemoveAmount);
+      state.modal = null;
+      state.txStatus = '';
+      toast(`LP removed: ${shortHash(txHash)}`);
+      return;
+    }
+
+    if (modal === 'lp-add-yt') {
+      state.txStatus = 'Encrypting SY+YT and adding liquidity...';
+      render();
+      const txHash = await addLiquiditySYYT(state.lpSyAmount, state.lpYtAmount);
+      state.modal = null;
+      state.txStatus = '';
+      toast(`LP added: ${shortHash(txHash)}`);
+      return;
+    }
+
+    if (modal === 'lp-remove-yt') {
+      state.txStatus = 'Encrypting LP and removing SY/YT liquidity...';
+      render();
+      const txHash = await removeLiquiditySYYT(state.lpRemoveAmount);
       state.modal = null;
       state.txStatus = '';
       toast(`LP removed: ${shortHash(txHash)}`);
