@@ -70,7 +70,10 @@ export const fissionMarketAbi = [
     type: 'function',
     name: 'requestSYRedeem',
     stateMutability: 'nonpayable',
-    inputs: [{ name: 'clearUsdc', type: 'uint256' }],
+    inputs: [
+      { name: 'clearUsdc', type: 'uint256' },
+      { name: 'commit', type: 'bytes32' }
+    ],
     outputs: [{ name: 'id', type: 'uint256' }]
   },
   {
@@ -79,6 +82,8 @@ export const fissionMarketAbi = [
     stateMutability: 'nonpayable',
     inputs: [
       { name: 'id', type: 'uint256' },
+      { name: 'recipient', type: 'address' },
+      { name: 'salt', type: 'bytes32' },
       { name: 'decryptionProof', type: 'bytes' }
     ],
     outputs: []
@@ -113,13 +118,6 @@ export const fissionMarketAbi = [
   },
   {
     type: 'function',
-    name: 'yieldDistributed',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [{ type: 'uint256' }]
-  },
-  {
-    type: 'function',
     name: 'snapshotMaturity',
     stateMutability: 'nonpayable',
     inputs: [],
@@ -127,45 +125,17 @@ export const fissionMarketAbi = [
   },
   {
     type: 'function',
-    name: 'redeemYT',
+    name: 'redeemYTToSY',
     stateMutability: 'nonpayable',
     inputs: [
       { name: 'encryptedAmount', type: 'bytes32' },
       { name: 'proof', type: 'bytes' }
     ],
-    outputs: [{ name: 'id', type: 'uint256' }]
-  },
-  {
-    type: 'function',
-    name: 'settleYTRedeem',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'id', type: 'uint256' },
-      { name: 'decryptionProof', type: 'bytes' }
-    ],
     outputs: []
   },
   {
     type: 'function',
-    name: 'ytRedeemRequests',
-    stateMutability: 'view',
-    inputs: [{ name: 'id', type: 'uint256' }],
-    outputs: [
-      { name: 'user', type: 'address' },
-      { name: 'yieldHandle', type: 'bytes32' },
-      { name: 'settled', type: 'bool' }
-    ]
-  },
-  {
-    type: 'function',
-    name: 'nextYTRedeemId',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [{ type: 'uint256' }]
-  },
-  {
-    type: 'function',
-    name: 'relayedRedeemYT',
+    name: 'relayedRedeemYTToSY',
     stateMutability: 'nonpayable',
     inputs: [
       { name: 'actor', type: 'address' },
@@ -175,15 +145,14 @@ export const fissionMarketAbi = [
       { name: 'deadline', type: 'uint256' },
       { name: 'signature', type: 'bytes' }
     ],
-    outputs: [{ name: 'id', type: 'uint256' }]
+    outputs: []
   },
   {
     type: 'event',
-    name: 'YTRedeemRequested',
+    name: 'YieldRedeemed',
     inputs: [
-      { name: 'id', type: 'uint256', indexed: false },
-      { name: 'user', type: 'address', indexed: false },
-      { name: 'yieldHandle', type: 'bytes32', indexed: false }
+      { name: 'ytBurnedHandle', type: 'bytes32', indexed: false },
+      { name: 'syMintedHandle', type: 'bytes32', indexed: false }
     ]
   },
   {
@@ -202,11 +171,18 @@ export const fissionMarketAbi = [
     stateMutability: 'view',
     inputs: [{ name: 'id', type: 'uint256' }],
     outputs: [
-      { name: 'user', type: 'address' },
-      { name: 'clearUsdc', type: 'uint256' },
-      { name: 'eqHandle', type: 'bytes32' },
+      { name: 'commit', type: 'bytes32' },
+      { name: 'amountHandle', type: 'bytes32' },
+      { name: 'requestBlockTime', type: 'uint64' },
       { name: 'settled', type: 'bool' }
     ]
+  },
+  {
+    type: 'function',
+    name: 'REDEEM_MIN_DELAY',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint256' }]
   },
   {
     type: 'function',
@@ -394,11 +370,28 @@ export const fissionMarketAbi = [
     inputs: [
       { name: 'actor', type: 'address' },
       { name: 'clearUsdc', type: 'uint256' },
+      { name: 'commit', type: 'bytes32' },
       { name: 'nonce', type: 'uint256' },
       { name: 'deadline', type: 'uint256' },
       { name: 'signature', type: 'bytes' }
     ],
     outputs: [{ name: 'id', type: 'uint256' }]
+  },
+  {
+    type: 'function',
+    name: 'relayedSettleSYRedeem',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'actor', type: 'address' },
+      { name: 'id', type: 'uint256' },
+      { name: 'recipient', type: 'address' },
+      { name: 'salt', type: 'bytes32' },
+      { name: 'nonce', type: 'uint256' },
+      { name: 'deadline', type: 'uint256' },
+      { name: 'signature', type: 'bytes' },
+      { name: 'decryptionProof', type: 'bytes' }
+    ],
+    outputs: []
   },
   {
     type: 'function',
@@ -436,9 +429,23 @@ export const fissionMarketAbi = [
     name: 'RedeemRequested',
     inputs: [
       { name: 'id', type: 'uint256', indexed: false },
-      { name: 'user', type: 'address', indexed: false },
-      { name: 'clearUsdc', type: 'uint256', indexed: false },
-      { name: 'eqHandle', type: 'bytes32', indexed: false }
+      { name: 'commit', type: 'bytes32', indexed: false },
+      { name: 'amountHandle', type: 'bytes32', indexed: false }
+    ]
+  },
+  {
+    type: 'event',
+    name: 'RedeemSettled',
+    inputs: [
+      { name: 'id', type: 'uint256', indexed: false },
+      { name: 'amount', type: 'uint256', indexed: false }
+    ]
+  },
+  {
+    type: 'event',
+    name: 'PublicDeposit',
+    inputs: [
+      { name: 'amount', type: 'uint256', indexed: false }
     ]
   }
 ];
