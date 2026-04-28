@@ -17,7 +17,8 @@ export default {
   networks: {
     hardhat: {
       type: "edr-simulated",
-      chainType: "l1"
+      chainType: "l1",
+      allowUnlimitedContractSize: true
     },
     arbitrumSepolia: {
       type: "http",

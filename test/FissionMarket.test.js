@@ -74,7 +74,16 @@ describe("FissionMarket", () => {
 
     const maturity = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30;
     const Market = await ethers.getContractFactory("FissionMarket");
-    market = await Market.deploy(maturity);
+    const cfg = {
+      maturity,
+      usdc: AAVE_USDC,
+      aUsdc: AAVE_AUSDC,
+      aavePool: AAVE_V3_POOL,
+      syReserveSeed: 1_000_000n * 10n ** 18n,
+      ptReserveSeed: 1_026_000n * 10n ** 18n,
+      ytReserveSeed: 12_000_000n * 10n ** 18n
+    };
+    market = await Market.deploy(owner.address, cfg);
     await market.waitForDeployment();
 
     vault = await ethers.getContractAt("FissionPositionVault", await market.vault());
@@ -236,7 +245,16 @@ describe("FissionMarket", () => {
     before(async () => {
       const futureMaturity = (await provider.getBlock("latest")).timestamp + 60 * 60 * 24 * 30;
       const Market = await ethers.getContractFactory("FissionMarket");
-      freshMarket = await Market.deploy(futureMaturity);
+      const cfg = {
+        maturity: futureMaturity,
+        usdc: AAVE_USDC,
+        aUsdc: AAVE_AUSDC,
+        aavePool: AAVE_V3_POOL,
+        syReserveSeed: 1_000_000n * 10n ** 18n,
+        ptReserveSeed: 1_026_000n * 10n ** 18n,
+        ytReserveSeed: 12_000_000n * 10n ** 18n
+      };
+      freshMarket = await Market.deploy(owner.address, cfg);
       await freshMarket.waitForDeployment();
       // Set up alice's USDC + adapter approval.
       const freshAdapter = await ethers.getContractAt("AaveUSDCYieldAdapter", await freshMarket.adapter());
@@ -348,6 +366,51 @@ describe("FissionMarket", () => {
       // Snapshot was taken in maturity-gating block.
       const yieldUsdc = await market.maturityYieldUsdc();
       assert.ok(yieldUsdc >= 0n);
+    });
+  });
+
+  describe("multi-market registry", () => {
+    let factory;
+
+    before(async () => {
+      const Factory = await ethers.getContractFactory("FissionMarketFactory");
+      factory = await Factory.deploy();
+      await factory.waitForDeployment();
+    });
+
+    it("starts with zero markets", async () => {
+      assert.equal(await factory.marketsCount(), 0n);
+    });
+
+    it("registerMarket adds a deployed market to the registry", async () => {
+      // The `market` deployed in `before()` is a real FissionMarket — register it.
+      const target = await market.getAddress();
+      await factory.registerMarket(target);
+      assert.equal(await factory.marketsCount(), 1n);
+      assert.equal(await factory.isRegistered(target), true);
+      const all = await factory.allMarkets();
+      assert.equal(all[0], target);
+    });
+
+    it("rejects double-registration", async () => {
+      const target = await market.getAddress();
+      await rejectsWithError(factory.registerMarket(target), "AlreadyRegistered");
+    });
+
+    it("rejects registerMarket from non-owner", async () => {
+      const target = await market.getAddress();
+      await rejectsWithError(factory.connect(alice).registerMarket(target), "OnlyOwner");
+    });
+
+    it("unregisterMarket removes a registered market", async () => {
+      const target = await market.getAddress();
+      await factory.unregisterMarket(target);
+      assert.equal(await factory.marketsCount(), 0n);
+      assert.equal(await factory.isRegistered(target), false);
+    });
+
+    it("rejects unregister of unknown market", async () => {
+      await rejectsWithError(factory.unregisterMarket(alice.address), "NotRegistered");
     });
   });
 });

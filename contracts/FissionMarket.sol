@@ -130,20 +130,30 @@ contract FissionMarket is EIP712 {
     error SnapshotAlreadyTaken();
     error YieldExhausted();
 
-    constructor(uint256 maturity_) EIP712("FissionMarket", "1") {
-        owner = msg.sender;
-        maturity = maturity_;
+    struct MarketConfig {
+        uint256 maturity;
+        address usdc;
+        address aUsdc;
+        address aavePool;
+        uint256 syReserveSeed;
+        uint256 ptReserveSeed;
+        uint256 ytReserveSeed;
+    }
+
+    constructor(address owner_, MarketConfig memory cfg) EIP712("FissionMarket", "1") {
+        owner = owner_;
+        maturity = cfg.maturity;
         vault = new FissionPositionVault(address(this));
-        adapter = new AaveUSDCYieldAdapter(address(this));
+        adapter = new AaveUSDCYieldAdapter(address(this), cfg.usdc, cfg.aUsdc, cfg.aavePool);
 
         feeMultiplier = Nox.toEuint256(BPS_DENOMINATOR - FEE_BPS);
         bpsDenominator = Nox.toEuint256(BPS_DENOMINATOR);
         Nox.allowThis(feeMultiplier);
         Nox.allowThis(bpsDenominator);
 
-        euint256 syReserve = Nox.toEuint256(1_000_000e18);
-        euint256 ptReserve = Nox.toEuint256(1_026_000e18);
-        euint256 ytReserve = Nox.toEuint256(12_000_000e18);
+        euint256 syReserve = Nox.toEuint256(cfg.syReserveSeed);
+        euint256 ptReserve = Nox.toEuint256(cfg.ptReserveSeed);
+        euint256 ytReserve = Nox.toEuint256(cfg.ytReserveSeed);
 
         vault.mintConfidential(KIND_SY, address(this), syReserve);
         vault.mintConfidential(KIND_PT, address(this), ptReserve);
