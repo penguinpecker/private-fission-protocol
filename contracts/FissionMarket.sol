@@ -34,15 +34,25 @@ contract FissionMarket is EIP712 {
     euint256 private feeMultiplier;
     euint256 private bpsDenominator;
 
+    /**
+     * Anonymized SY redeem request. `commit = keccak256(recipient, salt)` hides the recipient
+     * address until settle. `amountHandle` is an encrypted handle the public-decrypt oracle
+     * resolves at settle time, so the cleartext USDC amount is not stored on-chain. `requestBlockTime`
+     * gates settle behind a minimum delay to break tx-timing correlation between request and
+     * settle.
+     */
     struct RedeemRequest {
-        address user;
-        uint256 clearUsdc;
-        ebool eqHandle;
+        bytes32 commit;
+        euint256 amountHandle;
+        uint64 requestBlockTime;
         bool settled;
     }
 
     mapping(uint256 => RedeemRequest) public redeemRequests;
     uint256 public nextRedeemId;
+
+    /// Minimum delay between request and settle, in seconds. Trades latency for timing privacy.
+    uint256 public constant REDEEM_MIN_DELAY = 5 minutes;
 
     mapping(address => uint256) public nonces;
 
@@ -53,40 +63,23 @@ contract FissionMarket is EIP712 {
     uint256 public principalDeposited;
 
     /**
-     * Maturity-time yield distribution.
-     *
-     * At maturity anyone may call `snapshotMaturity` to lock the cleartext yield amount and an
-     * encrypted user-held YT supply. After that, holders submit a 2-step YT redemption:
-     * `requestYTRedeem` burns their YT and stakes their pro-rata yield handle for public
-     * decryption; `settleYTRedeem` decrypts that handle and pays out the cleartext USDC share.
-     *
-     * Privacy trade-off: the cleartext USDC redeemed by a user is `userYT × yieldUsdc /
-     * userTotalYT`. Once `yieldUsdc` is public and a user redeems, observers learn that user's
-     * share of `userTotalYT` (still divided by an encrypted denominator if no other user has
-     * redeemed). After several redemptions an observer can solve for individual ratios. This
-     * is acceptable for a prototype but documented as a known leak.
+     * Maturity-time yield distribution. The cleartext maturity yield is folded into the
+     * principal buffer at snapshot time so subsequent SY redemptions (via the 4-bucket exit)
+     * draw against a unified pool. YT holders claim their share by minting *encrypted* SY
+     * (`redeemYTToSY`) — no per-user decryption of the yield amount is required, removing the
+     * pro-rata leak that the previous cleartext payout had.
      */
     bool public maturitySnapshotTaken;
     uint256 public maturityYieldUsdc;
-    uint256 public yieldDistributed;
     euint256 private maturityUserYTSupply;
 
-    struct YTRedeemRequest {
-        address user;
-        euint256 yieldHandle;
-        bool settled;
-    }
-    mapping(uint256 => YTRedeemRequest) public ytRedeemRequests;
-    uint256 public nextYTRedeemId;
-
-    bytes32 private constant REDEEM_YT_TYPEHASH = keccak256(
-        "RedeemYT(address actor,bytes32 encryptedAmount,bytes32 proofHash,uint256 nonce,uint256 deadline)"
+    bytes32 private constant REDEEM_YT_TO_SY_TYPEHASH = keccak256(
+        "RedeemYTToSY(address actor,bytes32 encryptedAmount,bytes32 proofHash,uint256 nonce,uint256 deadline)"
     );
 
     event AaveYieldHarvested(address to, uint256 amount);
     event MaturitySnapshot(uint256 yieldUsdc, bytes32 userYTSupplyHandle);
-    event YTRedeemRequested(uint256 id, address user, bytes32 yieldHandle);
-    event YTRedeemSettled(uint256 id, address user, uint256 yieldUsdc);
+    event YieldRedeemed(bytes32 ytBurnedHandle, bytes32 syMintedHandle);
     event LiquidityAdded(uint8 pool, bytes32 lpHandle);
     event LiquidityRemoved(uint8 pool, bytes32 lpHandle);
 
@@ -106,16 +99,18 @@ contract FissionMarket is EIP712 {
         "Swap(address actor,uint8 route,bytes32 encryptedAmountIn,bytes32 proofInHash,bytes32 encryptedMinAmountOut,bytes32 proofMinHash,uint256 nonce,uint256 deadline)"
     );
     bytes32 private constant REQUEST_REDEEM_SY_TYPEHASH = keccak256(
-        "RequestSYRedeem(address actor,uint256 clearUsdc,uint256 nonce,uint256 deadline)"
+        "RequestSYRedeem(address actor,uint256 clearUsdc,bytes32 commit,uint256 nonce,uint256 deadline)"
+    );
+    bytes32 private constant SETTLE_REDEEM_SY_TYPEHASH = keccak256(
+        "SettleSYRedeem(uint256 id,address recipient,bytes32 salt,uint256 nonce,uint256 deadline)"
     );
 
-    event PublicDeposit(address user, uint256 amount);
-    event PublicRedemption(address user, uint256 amount);
+    event PublicDeposit(uint256 amount);
     event ConfidentialAction(bytes32 handleA, bytes32 handleB);
     event ConfidentialAmmSeeded(bytes32 syReserve, bytes32 ptReserve, bytes32 ytReserve);
     event ConfidentialAmmLiquidityAdded(address provider, uint8 reserve, bytes32 encryptedAmount);
-    event RedeemRequested(uint256 id, address user, uint256 clearUsdc, bytes32 eqHandle);
-    event RedeemSettled(uint256 id, address user, uint256 clearUsdc);
+    event RedeemRequested(uint256 id, bytes32 commit, bytes32 amountHandle);
+    event RedeemSettled(uint256 id, uint256 amount);
 
     error OnlyOwner();
     error InvalidReserve();
@@ -132,7 +127,8 @@ contract FissionMarket is EIP712 {
     error InsufficientYieldBuffer();
     error SnapshotNotTaken();
     error SnapshotAlreadyTaken();
-    error YieldExhausted();
+    error CommitMismatch();
+    error TooEarly();
 
     struct MarketConfig {
         uint256 maturity;
@@ -209,8 +205,13 @@ contract FissionMarket is EIP712 {
         _redeemPT(msg.sender, encryptedAmount, proof);
     }
 
-    function requestSYRedeem(uint256 clearUsdc) external returns (uint256 id) {
-        return _requestSYRedeem(msg.sender, clearUsdc);
+    /**
+     * Request a USDC redemption against an encrypted SY balance.
+     * @param clearUsdc One of the allowed bucket denominations (see `_isAllowedDenomination`).
+     * @param commit `keccak256(abi.encode(recipient, salt))` — hides the recipient until settle.
+     */
+    function requestSYRedeem(uint256 clearUsdc, bytes32 commit) external returns (uint256 id) {
+        return _requestSYRedeem(msg.sender, clearUsdc, commit);
     }
 
     function swapSYForPT(
@@ -249,42 +250,56 @@ contract FissionMarket is EIP712 {
         _swap(msg.sender, KIND_YT, KIND_SY, encryptedAmountIn, proofIn, encryptedMinAmountOut, proofMin);
     }
 
-    function settleSYRedeem(uint256 id, bytes calldata decryptionProof) external {
+    /**
+     * Settle a previously requested SY → USDC redemption. The caller proves recipient by
+     * supplying the `(recipient, salt)` pair that hashes to the request's `commit`.
+     * Must be called at least `REDEEM_MIN_DELAY` after the request, decoupling timing.
+     *
+     * Anyone may submit settle (with a valid salt) — typically the recipient or their relayer.
+     */
+    function settleSYRedeem(
+        uint256 id,
+        address recipient,
+        bytes32 salt,
+        bytes calldata decryptionProof
+    ) external {
         RedeemRequest storage r = redeemRequests[id];
-        if (r.user == address(0)) revert InvalidRedemption();
+        if (r.commit == bytes32(0)) revert InvalidRedemption();
         if (r.settled) revert AlreadySettled();
-        bool ok = Nox.publicDecrypt(r.eqHandle, decryptionProof);
-        if (!ok) revert InsufficientBalance();
+        if (block.timestamp < uint256(r.requestBlockTime) + REDEEM_MIN_DELAY) revert TooEarly();
+        if (keccak256(abi.encode(recipient, salt)) != r.commit) revert CommitMismatch();
+        // The encrypted amount is the actually-burned SY (which was capped at the user's balance
+        // by the vault). At 1e18 SY decimals → divide by USDC_TO_SY_SCALE to land in USDC base
+        // units. Public-decrypt yields cleartext USDC ready for adapter withdrawal.
+        uint256 transferredSy = Nox.publicDecrypt(r.amountHandle, decryptionProof);
+        uint256 clearUsdc = transferredSy / USDC_TO_SY_SCALE;
         r.settled = true;
-        // Defensive: clamp at zero rather than underflow if the principal counter has somehow
-        // drifted below the redeem amount. The Aave adapter still gates on its own balance.
-        principalDeposited = principalDeposited > r.clearUsdc ? principalDeposited - r.clearUsdc : 0;
-        adapter.withdrawTo(r.user, r.clearUsdc);
-        emit RedeemSettled(id, r.user, r.clearUsdc);
+        // Defensive: clamp principalDeposited at zero rather than underflow.
+        principalDeposited = principalDeposited > clearUsdc ? principalDeposited - clearUsdc : 0;
+        if (clearUsdc > 0) {
+            adapter.withdrawTo(recipient, clearUsdc);
+        }
+        emit RedeemSettled(id, clearUsdc);
     }
 
     /**
      * Sweep an unclaimed slice of the Aave-side surplus to `to`. Bounded so it cannot dip into
-     * either user principal or yield reserved for outstanding YT claims.
-     *
-     * Reserved = principalDeposited + (maturityYieldUsdc - yieldDistributed) when the maturity
-     * snapshot is taken; pre-snapshot it is just principalDeposited and the owner can sweep the
-     * floating Aave yield freely.
+     * user principal. Post-snapshot the maturity yield has been folded into `principalDeposited`,
+     * so a single counter is enough. Pre-snapshot, owner can sweep floating Aave yield freely.
      */
     function harvestAaveYield(address to, uint256 amount) external onlyOwner {
         uint256 reserveBalance = adapter.reserveBalance();
-        uint256 reserved = principalDeposited;
-        if (maturitySnapshotTaken) {
-            reserved += (maturityYieldUsdc - yieldDistributed);
-        }
-        if (reserveBalance < reserved + amount) revert InsufficientYieldBuffer();
+        if (reserveBalance < principalDeposited + amount) revert InsufficientYieldBuffer();
         adapter.withdrawTo(to, amount);
         emit AaveYieldHarvested(to, amount);
     }
 
     /**
-     * Idempotent: lock cleartext maturity yield and encrypted user-held YT supply.
-     * Callable by anyone after maturity. Required before any YT yield redemption.
+     * Idempotent: lock cleartext maturity yield and encrypted user-held YT supply, and fold
+     * the yield into `principalDeposited` so it backs YT-routed encrypted SY mints.
+     *
+     * Privacy upgrade: the per-claim cleartext payout is gone. Yield is claimed via
+     * `redeemYTToSY`, which mints encrypted SY directly without a public decryption step.
      */
     function snapshotMaturity() external onlyAfterMaturity {
         if (maturitySnapshotTaken) revert SnapshotAlreadyTaken();
@@ -292,6 +307,10 @@ contract FissionMarket is EIP712 {
         // Defensive: if Aave returned less than principal (shouldn't happen with aTokens), zero
         // out the yield rather than underflow.
         maturityYieldUsdc = reserveBalance > principalDeposited ? reserveBalance - principalDeposited : 0;
+        // Fold yield into principal buffer. From now on, all SY (principal-backed and yield-backed
+        // via redeemYTToSY) draws against a single, unified pool — observers cannot tell which
+        // bucket a redeemer is hitting.
+        principalDeposited += maturityYieldUsdc;
         euint256 userHeld = vault.confidentialUserHeldSupply(KIND_YT);
         Nox.allowThis(userHeld);
         maturityUserYTSupply = userHeld;
@@ -299,20 +318,28 @@ contract FissionMarket is EIP712 {
         emit MaturitySnapshot(maturityYieldUsdc, euint256.unwrap(userHeld));
     }
 
-    function redeemYT(externalEuint256 encryptedAmount, bytes calldata proof) external onlyAfterMaturity returns (uint256 id) {
-        return _redeemYT(msg.sender, encryptedAmount, proof);
+    /**
+     * Claim YT yield as encrypted SY. No public decryption: the yield amount stays encrypted
+     * end-to-end. User exits via the standard 4-bucket `requestSYRedeem` path, blending into
+     * the principal-redemption anonymity set.
+     */
+    function redeemYTToSY(externalEuint256 encryptedAmount, bytes calldata proof)
+        external
+        onlyAfterMaturity
+    {
+        _redeemYTToSY(msg.sender, encryptedAmount, proof);
     }
 
-    function relayedRedeemYT(
+    function relayedRedeemYTToSY(
         address actor,
         externalEuint256 encryptedAmount,
         bytes calldata proof,
         uint256 nonce,
         uint256 deadline,
         bytes calldata signature
-    ) external onlyAfterMaturity returns (uint256 id) {
+    ) external onlyAfterMaturity {
         bytes32 structHash = keccak256(abi.encode(
-            REDEEM_YT_TYPEHASH,
+            REDEEM_YT_TO_SY_TYPEHASH,
             actor,
             externalEuint256.unwrap(encryptedAmount),
             keccak256(proof),
@@ -320,44 +347,25 @@ contract FissionMarket is EIP712 {
             deadline
         ));
         _verifyAndConsume(structHash, actor, nonce, deadline, signature);
-        return _redeemYT(actor, encryptedAmount, proof);
+        _redeemYTToSY(actor, encryptedAmount, proof);
     }
 
-    function _redeemYT(address actor, externalEuint256 encryptedAmount, bytes calldata proof)
+    function _redeemYTToSY(address actor, externalEuint256 encryptedAmount, bytes calldata proof)
         internal
-        returns (uint256 id)
     {
         if (!maturitySnapshotTaken) revert SnapshotNotTaken();
         euint256 amount = _fromExternalAs(encryptedAmount, proof, actor);
         Nox.allow(amount, address(vault));
         euint256 burned = vault.burnConfidential(KIND_YT, actor, amount);
-        // yieldShare (USDC base units, 1e6 scale) = burned × yieldUsdc / userTotalYT.
-        // burned is at 1e18 (YT decimals); yieldUsdc is at 1e6; userTotalYT is at 1e18. So the
-        // 1e18s cancel and the result is in 1e6 USDC base units. No extra scaling needed.
-        euint256 yieldUsdcEnc = Nox.toEuint256(maturityYieldUsdc);
+        // syOut = burned × maturityYieldUsdc × USDC_TO_SY_SCALE / maturityUserYTSupply.
+        // burned and supply are both at 1e18; yield is at 1e6 USDC; USDC_TO_SY_SCALE = 1e12 lifts
+        // the result to 1e18 SY decimals. No additional scaling needed.
+        euint256 yieldUsdcEnc = Nox.toEuint256(maturityYieldUsdc * USDC_TO_SY_SCALE);
         euint256 numerator = Nox.mul(burned, yieldUsdcEnc);
-        euint256 share = Nox.div(numerator, maturityUserYTSupply);
-        Nox.allowPublicDecryption(share);
-        Nox.allowThis(share);
-        id = ++nextYTRedeemId;
-        ytRedeemRequests[id] = YTRedeemRequest({user: actor, yieldHandle: share, settled: false});
-        emit YTRedeemRequested(id, actor, euint256.unwrap(share));
-    }
-
-    function settleYTRedeem(uint256 id, bytes calldata decryptionProof) external {
-        YTRedeemRequest storage r = ytRedeemRequests[id];
-        if (r.user == address(0)) revert InvalidRedemption();
-        if (r.settled) revert AlreadySettled();
-        uint256 yieldUsdc = Nox.publicDecrypt(r.yieldHandle, decryptionProof);
-        // Cap at the remaining yield reserve as belt-and-braces protection.
-        uint256 remaining = maturityYieldUsdc - yieldDistributed;
-        if (yieldUsdc > remaining) revert YieldExhausted();
-        r.settled = true;
-        if (yieldUsdc > 0) {
-            yieldDistributed += yieldUsdc;
-            adapter.withdrawTo(r.user, yieldUsdc);
-        }
-        emit YTRedeemSettled(id, r.user, yieldUsdc);
+        euint256 syOut = Nox.div(numerator, maturityUserYTSupply);
+        Nox.allow(syOut, address(vault));
+        vault.mintConfidential(KIND_SY, actor, syOut);
+        emit YieldRedeemed(euint256.unwrap(burned), euint256.unwrap(syOut));
     }
 
     function addAmmLiquidity(
@@ -562,13 +570,42 @@ contract FissionMarket is EIP712 {
     function relayedRequestSYRedeem(
         address actor,
         uint256 clearUsdc,
+        bytes32 commit,
         uint256 nonce,
         uint256 deadline,
         bytes calldata signature
     ) external returns (uint256 id) {
-        bytes32 structHash = keccak256(abi.encode(REQUEST_REDEEM_SY_TYPEHASH, actor, clearUsdc, nonce, deadline));
+        bytes32 structHash = keccak256(abi.encode(REQUEST_REDEEM_SY_TYPEHASH, actor, clearUsdc, commit, nonce, deadline));
         _verifyAndConsume(structHash, actor, nonce, deadline, signature);
-        return _requestSYRedeem(actor, clearUsdc);
+        return _requestSYRedeem(actor, clearUsdc, commit);
+    }
+
+    function relayedSettleSYRedeem(
+        address actor,
+        uint256 id,
+        address recipient,
+        bytes32 salt,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature,
+        bytes calldata decryptionProof
+    ) external {
+        bytes32 structHash = keccak256(abi.encode(SETTLE_REDEEM_SY_TYPEHASH, id, recipient, salt, nonce, deadline));
+        _verifyAndConsume(structHash, actor, nonce, deadline, signature);
+        // Recipient must match the commit; settle proceeds normally.
+        RedeemRequest storage r = redeemRequests[id];
+        if (r.commit == bytes32(0)) revert InvalidRedemption();
+        if (r.settled) revert AlreadySettled();
+        if (block.timestamp < uint256(r.requestBlockTime) + REDEEM_MIN_DELAY) revert TooEarly();
+        if (keccak256(abi.encode(recipient, salt)) != r.commit) revert CommitMismatch();
+        uint256 transferredSy = Nox.publicDecrypt(r.amountHandle, decryptionProof);
+        uint256 clearUsdc = transferredSy / USDC_TO_SY_SCALE;
+        r.settled = true;
+        principalDeposited = principalDeposited > clearUsdc ? principalDeposited - clearUsdc : 0;
+        if (clearUsdc > 0) {
+            adapter.withdrawTo(recipient, clearUsdc);
+        }
+        emit RedeemSettled(id, clearUsdc);
     }
 
     function relayedSwap(
@@ -642,7 +679,9 @@ contract FissionMarket is EIP712 {
         euint256 amount = Nox.toEuint256(clearAmount * USDC_TO_SY_SCALE);
         vault.mintConfidential(KIND_SY, actor, amount);
         principalDeposited += clearAmount;
-        emit PublicDeposit(actor, clearAmount);
+        // PublicDeposit no longer carries the actor — the tx caller is visible on-chain
+        // anyway, and dropping the field keeps protocol-level event indexing actor-free.
+        emit PublicDeposit(clearAmount);
     }
 
     function _fission(address actor, externalEuint256 encryptedAmount, bytes calldata proof) internal {
@@ -671,22 +710,28 @@ contract FissionMarket is EIP712 {
         emit ConfidentialAction(euint256.unwrap(amount), bytes32(0));
     }
 
-    function _requestSYRedeem(address actor, uint256 clearUsdc) internal returns (uint256 id) {
+    function _requestSYRedeem(address actor, uint256 clearUsdc, bytes32 commit)
+        internal
+        returns (uint256 id)
+    {
         if (!_isAllowedDenomination(clearUsdc)) revert InvalidDenomination();
+        if (commit == bytes32(0)) revert CommitMismatch();
         id = ++nextRedeemId;
         euint256 requested = Nox.toEuint256(clearUsdc * USDC_TO_SY_SCALE);
         Nox.allow(requested, address(vault));
+        // `transferred` is min(requested, balance). Public-decrypt at settle yields the actual
+        // burned amount; if user had insufficient SY, transferred = 0 and the request settles
+        // as a no-op (no USDC paid out, no principal decrement).
         euint256 transferred = vault.burnConfidential(KIND_SY, actor, requested);
-        ebool ok = Nox.eq(transferred, requested);
-        Nox.allowPublicDecryption(ok);
-        Nox.allowThis(ok);
+        Nox.allowPublicDecryption(transferred);
+        Nox.allowThis(transferred);
         redeemRequests[id] = RedeemRequest({
-            user: actor,
-            clearUsdc: clearUsdc,
-            eqHandle: ok,
+            commit: commit,
+            amountHandle: transferred,
+            requestBlockTime: uint64(block.timestamp),
             settled: false
         });
-        emit RedeemRequested(id, actor, clearUsdc, ebool.unwrap(ok));
+        emit RedeemRequested(id, commit, euint256.unwrap(transferred));
     }
 
     function _swap(
@@ -727,8 +772,15 @@ contract FissionMarket is EIP712 {
         emit ConfidentialAction(euint256.unwrap(transferredIn), euint256.unwrap(effectiveOut));
     }
 
+    /**
+     * Denomination buckets. The 1-USDC bucket exists so that small YT-routed yield slices can
+     * exit through `requestSYRedeem`. Wider set than the prior 4-bucket version trades per-
+     * bucket anonymity-set size against precision; for prototype usage the wider set is the
+     * better tradeoff because most redemptions cluster around 100 / 1k.
+     */
     function _isAllowedDenomination(uint256 clearAmount) internal pure returns (bool) {
         return
+            clearAmount == 1 * 1e6 ||
             clearAmount == 10 * 1e6 ||
             clearAmount == 100 * 1e6 ||
             clearAmount == 1_000 * 1e6 ||
