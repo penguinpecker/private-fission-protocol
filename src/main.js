@@ -8,6 +8,9 @@ import {
   combinePTAndYT,
   connectWallet as connectWalletOnchain,
   decryptPortfolio,
+  EXPECTED_CHAIN_ID,
+  readChainId,
+  switchToArbitrumSepolia,
   fissionSY,
   listPendingRedeemsForAccount,
   listPendingYTRedeemsForAccount,
@@ -110,7 +113,9 @@ const state = {
   lpSyAmount: '1000',
   lpPtAmount: '1026',
   lpYtAmount: '12000',
-  lpRemoveAmount: '0'
+  lpRemoveAmount: '0',
+  chainId: null,
+  busy: false
 };
 
 const markets = [
@@ -191,6 +196,7 @@ async function connectWallet() {
 
 function refreshPostConnectState() {
   if (!state.account) return;
+  readChainId().then((id) => { state.chainId = id; render(); }).catch(() => {});
   readMaturity().then((m) => { state.maturity = m; render(); }).catch(() => {});
   readUSDCAllowance(state.account).then((a) => {
     state.hasUsdcApproval = a > 0n;
@@ -312,7 +318,9 @@ function shell(content) {
   }
 
   const active = state.screen;
+  const wrongChain = state.chainId !== null && state.chainId !== EXPECTED_CHAIN_ID;
   return `
+    ${wrongChain ? `<div class="toast" style="position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:99;background:#a02828;color:#fff;padding:10px 18px;border-radius:8px;cursor:pointer" data-modal-action="switch-chain">Wrong network (chainId ${state.chainId}). Click to switch to Arbitrum Sepolia.</div>` : ''}
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand" data-screen="home">
@@ -760,12 +768,16 @@ function screenPortfolio() {
     ? [
         ['SY-USDC', formatEncryptedBalance(state.portfolio.sy), 'Confidential Aave-backed yield base'],
         ['PT-USDC-30D', formatEncryptedBalance(state.portfolio.pt), 'Encrypted principal exposure'],
-        ['YT-USDC-30D', formatEncryptedBalance(state.portfolio.yt), 'Encrypted future yield exposure']
+        ['YT-USDC-30D', formatEncryptedBalance(state.portfolio.yt), 'Encrypted future yield exposure'],
+        ['LP-SY-PT-30D', formatEncryptedBalance(state.portfolio.lpSyPt), 'SY/PT pool LP share'],
+        ['LP-SY-YT-30D', formatEncryptedBalance(state.portfolio.lpSyYt), 'SY/YT pool LP share']
       ]
     : [
         ['SY-USDC', 'Encrypted handle', 'Decrypt with your wallet to view'],
         ['PT-USDC-30D', 'Encrypted handle', 'Decrypt with your wallet to view'],
-        ['YT-USDC-30D', 'Encrypted handle', 'Decrypt with your wallet to view']
+        ['YT-USDC-30D', 'Encrypted handle', 'Decrypt with your wallet to view'],
+        ['LP-SY-PT-30D', 'Encrypted handle', 'Decrypt with your wallet to view'],
+        ['LP-SY-YT-30D', 'Encrypted handle', 'Decrypt with your wallet to view']
       ];
 
   return `
@@ -805,7 +817,7 @@ function screenPortfolio() {
 function modal(type) {
   const copy = {
     connect: ['Connect wallet', 'Connect to Arbitrum Sepolia to see available markets, choose PT/YT strategies, and trade through the private AMM.', 'Connect wallet', 'connect'],
-    account: ['Account', `${shortAddress(state.account)} is connected. Private portfolio decryption is available for this wallet.`, 'Close', 'close'],
+    account: ['Account', `${shortAddress(state.account)} is connected${state.isAdmin ? ' as MARKET OWNER' : ''}. Network: ${state.chainId === EXPECTED_CHAIN_ID ? 'Arbitrum Sepolia ✓' : `chainId ${state.chainId ?? 'unknown'} ✗`}.`, 'Disconnect', 'disconnect'],
     privacy: ['Confidentiality controls', `Fission encrypts strategy balances, swap input amounts, AMM outputs, and PT/YT position sizes with Nox handles. Relay mode is ${state.useRelay ? 'ON' : 'OFF'} — when on, the wallet signs an EIP-712 intent and the same wallet submits, so the privacy benefit only shows once a separate relayer wallet is wired.`, 'Toggle relay mode', 'toggle-relay'],
     how: ['How Fission markets work', 'USDC enters a yield source and becomes confidential SY. SY can be split into encrypted PT and YT. PT targets fixed principal redemption; YT isolates variable future yield. Both trade through a confidential AMM.', 'Enter app', 'connect'],
     chart: ['Chart details', 'The chart is a strategy payoff schematic. Live swap execution is handled by the deployed confidential AMM without exposing public quote previews.', 'Close', 'close'],
@@ -898,6 +910,26 @@ function render() {
       if (el.dataset.modalAction === 'toggle-relay') {
         state.useRelay = !state.useRelay;
         toast(`Relay mode ${state.useRelay ? 'ON' : 'OFF'}`);
+        render();
+      }
+      if (el.dataset.modalAction === 'switch-chain') {
+        try {
+          await switchToArbitrumSepolia();
+        } catch (e) {
+          toast(e.message || 'Network switch failed');
+        }
+      }
+      if (el.dataset.modalAction === 'disconnect') {
+        state.wallet = false;
+        state.account = '';
+        state.portfolio = null;
+        state.pendingRedeem = null;
+        state.pendingRedeems = [];
+        state.pendingYTRedeem = null;
+        state.pendingYTRedeems = [];
+        state.modal = null;
+        state.screen = 'home';
+        toast('Disconnected');
         render();
       }
     });

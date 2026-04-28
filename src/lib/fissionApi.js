@@ -101,6 +101,39 @@ export async function connectWallet() {
   return account;
 }
 
+export async function readChainId() {
+  if (!window.ethereum) return null;
+  const hex = await window.ethereum.request({ method: 'eth_chainId' });
+  return parseInt(hex, 16);
+}
+
+export const EXPECTED_CHAIN_ID = 421614;
+
+export async function switchToArbitrumSepolia() {
+  if (!window.ethereum) throw new Error('No wallet provider');
+  try {
+    await window.ethereum.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: '0x66eee' }]
+    });
+  } catch (err) {
+    if (err.code === 4902) {
+      await window.ethereum.request({
+        method: 'wallet_addEthereumChain',
+        params: [{
+          chainId: '0x66eee',
+          chainName: 'Arbitrum Sepolia',
+          nativeCurrency: { name: 'Ethereum', symbol: 'ETH', decimals: 18 },
+          rpcUrls: ['https://sepolia-rollup.arbitrum.io/rpc'],
+          blockExplorerUrls: ['https://sepolia.arbiscan.io']
+        }]
+      });
+    } else {
+      throw err;
+    }
+  }
+}
+
 /**
  * Reads the registry from the factory contract. Returns an empty array if no factory address is
  * configured — the frontend then falls back to the single hardcoded market address.
@@ -422,17 +455,24 @@ export async function swapWithAmm(route, amount, minAmountOut = '0') {
   );
 }
 
+export const VAULT_KIND_LP_SY_PT = 3;
+export const VAULT_KIND_LP_SY_YT = 4;
+
 export async function decryptPortfolio(account) {
   const entries = await Promise.all([
     decryptKindBalance(VAULT_KIND.sy, account),
     decryptKindBalance(VAULT_KIND.pt, account),
-    decryptKindBalance(VAULT_KIND.yt, account)
+    decryptKindBalance(VAULT_KIND.yt, account),
+    decryptKindBalance(VAULT_KIND_LP_SY_PT, account),
+    decryptKindBalance(VAULT_KIND_LP_SY_YT, account)
   ]);
 
   return {
     sy: entries[0],
     pt: entries[1],
-    yt: entries[2]
+    yt: entries[2],
+    lpSyPt: entries[3],
+    lpSyYt: entries[4]
   };
 }
 
