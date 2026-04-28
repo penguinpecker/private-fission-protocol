@@ -20,14 +20,16 @@ contract FissionPositionVault {
     uint8 public constant KIND_SY = 0;
     uint8 public constant KIND_PT = 1;
     uint8 public constant KIND_YT = 2;
+    uint8 public constant KIND_LP_SY_PT = 3;
+    uint8 public constant KIND_MAX = KIND_LP_SY_PT;
 
     address public immutable market;
 
     mapping(uint8 => mapping(address => euint256)) private _balances;
     mapping(uint8 => euint256) private _totalSupplies;
 
-    string[3] private _names;
-    string[3] private _symbols;
+    string[4] private _names;
+    string[4] private _symbols;
 
     error OnlyMarket();
     error InvalidKind();
@@ -38,9 +40,11 @@ contract FissionPositionVault {
         _names[KIND_SY] = "Fission SY USDC";
         _names[KIND_PT] = "Fission PT USDC 30D";
         _names[KIND_YT] = "Fission YT USDC 30D";
+        _names[KIND_LP_SY_PT] = "Fission LP SY/PT 30D";
         _symbols[KIND_SY] = "SY-USDC";
         _symbols[KIND_PT] = "PT-USDC-30D";
         _symbols[KIND_YT] = "YT-USDC-30D";
+        _symbols[KIND_LP_SY_PT] = "LP-SY-PT-30D";
     }
 
     modifier onlyMarket() {
@@ -49,7 +53,7 @@ contract FissionPositionVault {
     }
 
     modifier validKind(uint8 kind) {
-        if (kind > KIND_YT) revert InvalidKind();
+        if (kind > KIND_MAX) revert InvalidKind();
         _;
     }
 

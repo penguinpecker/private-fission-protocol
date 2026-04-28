@@ -210,6 +210,28 @@ export const fissionMarketAbi = [
   },
   {
     type: 'function',
+    name: 'addLiquiditySYPT',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'encryptedSy', type: 'bytes32' },
+      { name: 'syProof', type: 'bytes' },
+      { name: 'encryptedPt', type: 'bytes32' },
+      { name: 'ptProof', type: 'bytes' }
+    ],
+    outputs: []
+  },
+  {
+    type: 'function',
+    name: 'removeLiquiditySYPT',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'encryptedLp', type: 'bytes32' },
+      { name: 'lpProof', type: 'bytes' }
+    ],
+    outputs: []
+  },
+  {
+    type: 'function',
     name: 'addAmmLiquidity',
     stateMutability: 'nonpayable',
     inputs: [
