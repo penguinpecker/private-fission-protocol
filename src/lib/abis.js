@@ -15,6 +15,16 @@ export const erc20Abi = [
     stateMutability: 'view',
     inputs: [{ name: 'account', type: 'address' }],
     outputs: [{ type: 'uint256' }]
+  },
+  {
+    type: 'function',
+    name: 'allowance',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'owner', type: 'address' },
+      { name: 'spender', type: 'address' }
+    ],
+    outputs: [{ type: 'uint256' }]
   }
 ];
 
@@ -70,6 +80,30 @@ export const fissionMarketAbi = [
     inputs: [
       { name: 'id', type: 'uint256' },
       { name: 'decryptionProof', type: 'bytes' }
+    ],
+    outputs: []
+  },
+  {
+    type: 'function',
+    name: 'nextRedeemId',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint256' }]
+  },
+  {
+    type: 'function',
+    name: 'principalDeposited',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint256' }]
+  },
+  {
+    type: 'function',
+    name: 'harvestAaveYield',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'to', type: 'address' },
+      { name: 'amount', type: 'uint256' }
     ],
     outputs: []
   },

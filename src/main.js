@@ -5,11 +5,21 @@ import {
   connectWallet as connectWalletOnchain,
   decryptPortfolio,
   fissionSY,
+  listPendingRedeemsForAccount,
   mintSY,
   readMaturity,
+  readUSDCAllowance,
   redeemPT,
   requestSYRedeem,
   settleSYRedeem,
+  signRelayedCombine,
+  signRelayedFission,
+  signRelayedRedeemPT,
+  signRelayedSwap,
+  submitRelayedCombine,
+  submitRelayedFission,
+  submitRelayedRedeemPT,
+  submitRelayedSwap,
   swapWithAmm
 } from './lib/fissionApi.js';
 import { FISSION_ADDRESSES } from './lib/addresses.js';
@@ -60,15 +70,19 @@ const state = {
   wallet: false,
   strategy: 'pt',
   action: 'buy',
-  amount: '1,000',
+  amount: '10',
   mintAmount: '100',
   redeemUsdcAmount: '100',
   redeemPtAmount: '10',
+  minOut: '0',
+  useRelay: false,
   account: '',
   txStatus: '',
   portfolio: null,
   maturity: null,
-  pendingRedeem: null
+  pendingRedeem: null,
+  pendingRedeems: [],
+  hasUsdcApproval: false
 };
 
 const markets = [
@@ -137,14 +151,58 @@ async function connectWallet() {
     state.txStatus = '';
     toast('Wallet connected. Private markets unlocked.');
     resetScroll();
-    readMaturity().then((m) => {
-      state.maturity = m;
-      render();
-    }).catch(() => {});
+    refreshPostConnectState();
+    attachWalletListeners();
   } catch (error) {
     state.txStatus = '';
     toast(error.message || 'Wallet connection failed');
   }
+}
+
+function refreshPostConnectState() {
+  if (!state.account) return;
+  readMaturity().then((m) => { state.maturity = m; render(); }).catch(() => {});
+  readUSDCAllowance(state.account).then((a) => {
+    state.hasUsdcApproval = a > 0n;
+    render();
+  }).catch(() => {});
+  listPendingRedeemsForAccount(state.account).then((redeems) => {
+    state.pendingRedeems = redeems;
+    if (!state.pendingRedeem && redeems.length) {
+      state.pendingRedeem = redeems[redeems.length - 1];
+    }
+    render();
+  }).catch(() => {});
+}
+
+let walletListenersAttached = false;
+function attachWalletListeners() {
+  if (walletListenersAttached || !window.ethereum?.on) return;
+  walletListenersAttached = true;
+  window.ethereum.on('accountsChanged', (accounts) => {
+    if (!accounts.length) {
+      state.wallet = false;
+      state.account = '';
+      state.portfolio = null;
+      state.pendingRedeem = null;
+      state.pendingRedeems = [];
+      state.screen = 'home';
+      toast('Wallet disconnected');
+      render();
+      return;
+    }
+    state.account = accounts[0];
+    state.portfolio = null;
+    state.pendingRedeem = null;
+    state.pendingRedeems = [];
+    refreshPostConnectState();
+    toast('Account changed');
+    render();
+  });
+  window.ethereum.on('chainChanged', () => {
+    toast('Network changed — reload required');
+    setTimeout(() => window.location.reload(), 800);
+  });
 }
 
 function toast(text) {
@@ -430,6 +488,7 @@ function screenStrategy() {
               <b>${outputTokenFor(item)}</b>
             </div>
           </div>
+          ${state.strategy !== 'pair' ? amountInput('Min output (slippage guard, encrypted)', state.minOut, outputTokenFor(item), 'minOut') : ''}
           <button class="primary full" ${actionDisabled ? 'disabled' : 'data-modal="trade"'}>
             ${actionDisabled ? 'Market matured · use redeem' : `${state.action} with confidential AMM`}
           </button>
@@ -570,7 +629,7 @@ function modal(type) {
   const copy = {
     connect: ['Connect wallet', 'Connect to Arbitrum Sepolia to see available markets, choose PT/YT strategies, and trade through the private AMM.', 'Connect wallet', 'connect'],
     account: ['Account', `${shortAddress(state.account)} is connected. Private portfolio decryption is available for this wallet.`, 'Close', 'close'],
-    privacy: ['Confidentiality controls', 'Fission encrypts strategy balances, swap input amounts, AMM outputs, and PT/YT position sizes with Nox handles. Only authorized viewers can decrypt.', 'Got it', 'close'],
+    privacy: ['Confidentiality controls', `Fission encrypts strategy balances, swap input amounts, AMM outputs, and PT/YT position sizes with Nox handles. Relay mode is ${state.useRelay ? 'ON' : 'OFF'} — when on, the wallet signs an EIP-712 intent and the same wallet submits, so the privacy benefit only shows once a separate relayer wallet is wired.`, 'Toggle relay mode', 'toggle-relay'],
     how: ['How Fission markets work', 'USDC enters a yield source and becomes confidential SY. SY can be split into encrypted PT and YT. PT targets fixed principal redemption; YT isolates variable future yield. Both trade through a confidential AMM.', 'Enter app', 'connect'],
     chart: ['Chart details', 'The chart is a strategy payoff schematic. Live swap execution is handled by the deployed confidential AMM without exposing public quote previews.', 'Close', 'close'],
     mint: ['Mint confidential SY', 'Approve USDC to the deployed Aave adapter, then mint confidential SY into the Fission market. The USDC deposit is public; the resulting SY balance is confidential.', 'Approve + mint SY', 'tx'],
@@ -632,6 +691,11 @@ function render() {
       if (el.dataset.modalAction === 'settle-redeem') {
         await settlePendingRedeem();
       }
+      if (el.dataset.modalAction === 'toggle-relay') {
+        state.useRelay = !state.useRelay;
+        toast(`Relay mode ${state.useRelay ? 'ON' : 'OFF'}`);
+        render();
+      }
     });
   });
   document.querySelectorAll('[data-strategy]').forEach((el) => {
@@ -661,11 +725,17 @@ async function executeModalTransaction() {
   const modal = state.modal;
   try {
     if (modal === 'mint') {
-      state.txStatus = 'Approving USDC to the deployed Aave adapter...';
-      render();
-      const approveHash = await approveUSDC(state.mintAmount);
-      state.txStatus = `Approval submitted: ${shortHash(approveHash)}. Minting confidential SY...`;
-      render();
+      if (!state.hasUsdcApproval) {
+        state.txStatus = 'One-time max approval of USDC to the Aave adapter...';
+        render();
+        const approveHash = await approveUSDC();
+        state.hasUsdcApproval = true;
+        state.txStatus = `Approval submitted: ${shortHash(approveHash)}. Minting confidential SY...`;
+        render();
+      } else {
+        state.txStatus = 'Minting confidential SY...';
+        render();
+      }
       const mintHash = await mintSY(state.mintAmount);
       state.modal = null;
       state.txStatus = '';
@@ -696,7 +766,7 @@ async function executeModalTransaction() {
     if (modal === 'redeem-pt') {
       state.txStatus = 'Encrypting PT amount and submitting redeem...';
       render();
-      const txHash = await redeemPT(state.redeemPtAmount);
+      const txHash = await runRedeemPT(state.redeemPtAmount);
       state.modal = null;
       state.txStatus = '';
       toast(`PT redeemed for SY: ${shortHash(txHash)}`);
@@ -736,23 +806,44 @@ async function settlePendingRedeem() {
 }
 
 async function executeStrategyTransaction() {
+  const route = swapRouteForCurrentState();
   if (state.strategy === 'pair') {
-    if (state.action === 'buy') return fissionSY(state.amount);
-    if (state.action === 'sell') return combinePTAndYT(state.amount);
+    if (state.action === 'buy') return runFission(state.amount);
+    if (state.action === 'sell') return runCombine(state.amount);
     throw new Error('Unknown action');
   }
+  if (!route) throw new Error('Unknown strategy');
+  return runSwap(route, state.amount, state.minOut);
+}
 
-  if (state.strategy === 'pt') {
-    if (state.action === 'buy') return swapWithAmm('syToPt', state.amount);
-    return swapWithAmm('ptToSy', state.amount);
-  }
+function swapRouteForCurrentState() {
+  if (state.strategy === 'pt') return state.action === 'buy' ? 'syToPt' : 'ptToSy';
+  if (state.strategy === 'yt') return state.action === 'buy' ? 'syToYt' : 'ytToSy';
+  return null;
+}
 
-  if (state.strategy === 'yt') {
-    if (state.action === 'buy') return swapWithAmm('syToYt', state.amount);
-    return swapWithAmm('ytToSy', state.amount);
-  }
+async function runFission(amount) {
+  if (!state.useRelay) return fissionSY(amount);
+  const intent = await signRelayedFission(amount);
+  return submitRelayedFission(intent);
+}
 
-  throw new Error('Unknown strategy');
+async function runCombine(amount) {
+  if (!state.useRelay) return combinePTAndYT(amount);
+  const intent = await signRelayedCombine(amount);
+  return submitRelayedCombine(intent);
+}
+
+async function runSwap(route, amount, minOut) {
+  if (!state.useRelay) return swapWithAmm(route, amount, minOut);
+  const intent = await signRelayedSwap(route, amount, minOut);
+  return submitRelayedSwap(intent);
+}
+
+async function runRedeemPT(amount) {
+  if (!state.useRelay) return redeemPT(amount);
+  const intent = await signRelayedRedeemPT(amount);
+  return submitRelayedRedeemPT(intent);
 }
 
 function tradeRouteLabel() {
