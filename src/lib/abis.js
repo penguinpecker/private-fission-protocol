@@ -399,6 +399,44 @@ export const fissionMarketAbi = [
   }
 ];
 
+export const fissionFactoryAbi = [
+  {
+    type: 'function',
+    name: 'allMarkets',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'address[]' }]
+  },
+  {
+    type: 'function',
+    name: 'marketsCount',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint256' }]
+  },
+  {
+    type: 'function',
+    name: 'isRegistered',
+    stateMutability: 'view',
+    inputs: [{ name: 'market', type: 'address' }],
+    outputs: [{ type: 'bool' }]
+  },
+  {
+    type: 'function',
+    name: 'registerMarket',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'market', type: 'address' }],
+    outputs: []
+  },
+  {
+    type: 'function',
+    name: 'unregisterMarket',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'market', type: 'address' }],
+    outputs: []
+  }
+];
+
 export const vaultAbi = [
   {
     type: 'function',

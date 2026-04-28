@@ -17,11 +17,30 @@ async function main() {
   const sourceJson = JSON.stringify(buildInfo.input);
   const abi = new AbiCoder();
 
+  const cfg = deployment.config || {};
+  const marketCfgTuple = [
+    deployment.maturity,
+    cfg.usdc,
+    cfg.aUsdc,
+    cfg.aavePool,
+    cfg.syReserveSeed,
+    cfg.ptReserveSeed,
+    cfg.ytReserveSeed
+  ];
+
   const targets = [
     {
       address: deployment.market,
       contractName: 'contracts/FissionMarket.sol:FissionMarket',
-      args: abi.encode(['uint256'], [deployment.maturity]).slice(2)
+      args: abi
+        .encode(
+          [
+            'address',
+            'tuple(uint256,address,address,address,uint256,uint256,uint256)'
+          ],
+          [deployment.deployer, marketCfgTuple]
+        )
+        .slice(2)
     },
     {
       address: deployment.vault,
@@ -31,9 +50,24 @@ async function main() {
     {
       address: deployment.adapter,
       contractName: 'contracts/AaveUSDCYieldAdapter.sol:AaveUSDCYieldAdapter',
-      args: abi.encode(['address'], [deployment.market]).slice(2)
+      args: abi
+        .encode(['address', 'address', 'address', 'address'], [
+          deployment.market,
+          cfg.usdc,
+          cfg.aUsdc,
+          cfg.aavePool
+        ])
+        .slice(2)
     }
   ];
+
+  if (deployment.factory) {
+    targets.push({
+      address: deployment.factory,
+      contractName: 'contracts/FissionMarketFactory.sol:FissionMarketFactory',
+      args: ''
+    });
+  }
 
   for (const target of targets) {
     console.log(`\n→ ${target.contractName} @ ${target.address}`);

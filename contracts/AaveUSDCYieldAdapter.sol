@@ -1,22 +1,28 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {FissionAddresses} from "./FissionAddresses.sol";
 import {IAavePool} from "./interfaces/IAavePool.sol";
 import {IERC20Minimal} from "./interfaces/IERC20Minimal.sol";
 
+/**
+ * Generic Aave V3 single-asset yield adapter. Decoupled from network-specific addresses so the
+ * market factory can spin up adapters for any (asset, pool, aToken) tuple.
+ */
 contract AaveUSDCYieldAdapter {
-    IERC20Minimal public immutable usdc = IERC20Minimal(FissionAddresses.AAVE_USDC);
-    IERC20Minimal public immutable aUsdc = IERC20Minimal(FissionAddresses.AAVE_AUSDC);
-    IAavePool public immutable pool = IAavePool(FissionAddresses.AAVE_V3_POOL);
+    IERC20Minimal public immutable usdc;
+    IERC20Minimal public immutable aUsdc;
+    IAavePool public immutable pool;
     address public immutable market;
 
     error OnlyMarket();
     error TransferFailed();
 
-    constructor(address market_) {
+    constructor(address market_, address usdc_, address aUsdc_, address pool_) {
         market = market_;
-        usdc.approve(address(pool), type(uint256).max);
+        usdc = IERC20Minimal(usdc_);
+        aUsdc = IERC20Minimal(aUsdc_);
+        pool = IAavePool(pool_);
+        usdc.approve(pool_, type(uint256).max);
     }
 
     modifier onlyMarket() {

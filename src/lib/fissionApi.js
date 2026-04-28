@@ -11,7 +11,7 @@ import {
 } from 'viem';
 import { arbitrumSepolia } from 'viem/chains';
 import { CHAIN, EXTERNAL_ADDRESSES, FISSION_ADDRESSES, VAULT_KIND } from './addresses.js';
-import { erc20Abi, fissionMarketAbi, vaultAbi } from './abis.js';
+import { erc20Abi, fissionFactoryAbi, fissionMarketAbi, vaultAbi } from './abis.js';
 
 const RELAY_DEFAULT_DEADLINE_SECONDS = 30 * 60;
 
@@ -99,6 +99,21 @@ export async function connectWallet() {
   const { walletClient } = createClients();
   const [account] = await walletClient.requestAddresses();
   return account;
+}
+
+/**
+ * Reads the registry from the factory contract. Returns an empty array if no factory address is
+ * configured — the frontend then falls back to the single hardcoded market address.
+ */
+export async function listFactoryMarkets() {
+  if (!FISSION_ADDRESSES.factory) return [];
+  const { publicClient } = createClients();
+  const factory = getContract({
+    address: FISSION_ADDRESSES.factory,
+    abi: fissionFactoryAbi,
+    client: publicClient
+  });
+  return factory.read.allMarkets();
 }
 
 export async function readMaturity() {
