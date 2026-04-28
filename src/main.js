@@ -115,7 +115,8 @@ const state = {
   lpYtAmount: '12000',
   lpRemoveAmount: '0',
   chainId: null,
-  busy: false
+  busy: false,
+  autoSwitchAttempted: false
 };
 
 const markets = [
@@ -196,7 +197,21 @@ async function connectWallet() {
 
 function refreshPostConnectState() {
   if (!state.account) return;
-  readChainId().then((id) => { state.chainId = id; render(); }).catch(() => {});
+  readChainId().then(async (id) => {
+    state.chainId = id;
+    render();
+    if (id !== EXPECTED_CHAIN_ID && !state.autoSwitchAttempted) {
+      state.autoSwitchAttempted = true;
+      // Auto-trigger MetaMask switch dialog once per session. If the user rejects, the
+      // wrong-network banner stays visible as a manual fallback. chainChanged listener
+      // reloads on success.
+      try {
+        await switchToArbitrumSepolia();
+      } catch {
+        // User rejected or wallet refused — leave the banner for manual click.
+      }
+    }
+  }).catch(() => {});
   readMaturity().then((m) => { state.maturity = m; render(); }).catch(() => {});
   readUSDCAllowance(state.account).then((a) => {
     state.hasUsdcApproval = a > 0n;
@@ -320,7 +335,7 @@ function shell(content) {
   const active = state.screen;
   const wrongChain = state.chainId !== null && state.chainId !== EXPECTED_CHAIN_ID;
   return `
-    ${wrongChain ? `<div class="toast" style="position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:99;background:#a02828;color:#fff;padding:10px 18px;border-radius:8px;cursor:pointer" data-modal-action="switch-chain">Wrong network (chainId ${state.chainId}). Click to switch to Arbitrum Sepolia.</div>` : ''}
+    ${wrongChain ? `<button class="chain-banner" data-modal-action="switch-chain" type="button">⚠ Wrong network (chainId ${state.chainId}). Click to switch to Arbitrum Sepolia</button>` : ''}
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand" data-screen="home">
