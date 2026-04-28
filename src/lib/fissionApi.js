@@ -476,6 +476,26 @@ export async function decryptPortfolio(account) {
   };
 }
 
+/**
+ * Read the raw encrypted-balance handle for a given kind+account. Returns the bytes32 handle.
+ * If the handle is 0x00...00 the user's balance has never been initialised (i.e. they have
+ * literally zero of that kind), and any swap/burn would revert with `ZeroBalance` in the vault.
+ */
+export async function readKindBalanceHandle(kind, account) {
+  const { publicClient } = createClients();
+  const vault = getContract({
+    address: FISSION_ADDRESSES.vault,
+    abi: vaultAbi,
+    client: publicClient
+  });
+  return vault.read.confidentialBalanceOf([kind, account]);
+}
+
+export function isUninitializedHandle(handle) {
+  if (!handle) return true;
+  return /^0x0+$/.test(handle);
+}
+
 export async function decryptKindBalance(kind, account) {
   const { publicClient, walletClient } = createClients();
   const vault = getContract({
