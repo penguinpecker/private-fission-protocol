@@ -23,6 +23,7 @@ contract FissionMarket is EIP712 {
     uint8 public constant KIND_PT = 1;
     uint8 public constant KIND_YT = 2;
     uint8 public constant KIND_LP_SY_PT = 3;
+    uint8 public constant KIND_LP_SY_YT = 4;
 
     uint256 public immutable maturity;
 
@@ -162,9 +163,11 @@ contract FissionMarket is EIP712 {
         vault.mintConfidential(KIND_PT, address(this), ptReserve);
         vault.mintConfidential(KIND_YT, address(this), ytReserve);
 
-        // Initial LP supply for the SY/PT pool, locked to the market. Future LP deposits dilute
-        // proportionally; the market's locked share captures the seed-time backing.
+        // Initial LP supply for the SY/PT and SY/YT pools, locked to the market. Future LP
+        // deposits dilute proportionally; the market's locked share captures the seed-time
+        // backing.
         vault.mintConfidential(KIND_LP_SY_PT, address(this), syReserve);
+        vault.mintConfidential(KIND_LP_SY_YT, address(this), syReserve);
 
         emit ConfidentialAmmSeeded(
             euint256.unwrap(syReserve),
@@ -380,91 +383,106 @@ contract FissionMarket is EIP712 {
     function addLiquiditySYPT(
         externalEuint256 encryptedSy,
         bytes calldata syProof,
-        externalEuint256 encryptedPt,
-        bytes calldata ptProof
+        externalEuint256 encryptedOther,
+        bytes calldata otherProof
     ) external notMatured {
-        _addLiquiditySYPT(msg.sender, encryptedSy, syProof, encryptedPt, ptProof);
+        _addLiquidity(msg.sender, KIND_PT, KIND_LP_SY_PT, encryptedSy, syProof, encryptedOther, otherProof);
     }
 
     function removeLiquiditySYPT(
         externalEuint256 encryptedLp,
         bytes calldata lpProof
     ) external notMatured {
-        _removeLiquiditySYPT(msg.sender, encryptedLp, lpProof);
+        _removeLiquidity(msg.sender, KIND_PT, KIND_LP_SY_PT, encryptedLp, lpProof);
     }
 
-    function _addLiquiditySYPT(
-        address actor,
+    function addLiquiditySYYT(
         externalEuint256 encryptedSy,
         bytes calldata syProof,
-        externalEuint256 encryptedPt,
-        bytes calldata ptProof
-    ) internal {
-        euint256 syIn = _fromExternalAs(encryptedSy, syProof, actor);
-        euint256 ptIn = _fromExternalAs(encryptedPt, ptProof, actor);
-
-        // Burn both inputs from the user, capture actually-transferred amounts.
-        Nox.allow(syIn, address(vault));
-        Nox.allow(ptIn, address(vault));
-        euint256 transferredSy = vault.transferConfidentialByMarket(KIND_SY, actor, address(this), syIn);
-        euint256 transferredPt = vault.transferConfidentialByMarket(KIND_PT, actor, address(this), ptIn);
-
-        euint256 totalLP = vault.confidentialTotalSupply(KIND_LP_SY_PT);
-        Nox.allowThis(totalLP);
-        // Reserves *after* the deposit; subtract the just-transferred amount to recover pre-state.
-        euint256 syReserveAfter = vault.confidentialBalanceOf(KIND_SY, address(this));
-        euint256 ptReserveAfter = vault.confidentialBalanceOf(KIND_PT, address(this));
-        euint256 syReserveBefore = Nox.sub(syReserveAfter, transferredSy);
-        euint256 ptReserveBefore = Nox.sub(ptReserveAfter, transferredPt);
-
-        // Per-side LP yield, take the minimum (limiting factor).
-        euint256 lpFromSy = Nox.div(Nox.mul(transferredSy, totalLP), syReserveBefore);
-        euint256 lpFromPt = Nox.div(Nox.mul(transferredPt, totalLP), ptReserveBefore);
-        ebool syIsLimit = Nox.le(lpFromSy, lpFromPt);
-        euint256 lpMinted = Nox.select(syIsLimit, lpFromSy, lpFromPt);
-
-        // Refund the over-supplied side.
-        euint256 syUsed = Nox.div(Nox.mul(lpMinted, syReserveBefore), totalLP);
-        euint256 ptUsed = Nox.div(Nox.mul(lpMinted, ptReserveBefore), totalLP);
-        euint256 syRefund = Nox.sub(transferredSy, syUsed);
-        euint256 ptRefund = Nox.sub(transferredPt, ptUsed);
-
-        Nox.allow(syRefund, address(vault));
-        Nox.allow(ptRefund, address(vault));
-        vault.transferConfidentialByMarket(KIND_SY, address(this), actor, syRefund);
-        vault.transferConfidentialByMarket(KIND_PT, address(this), actor, ptRefund);
-
-        Nox.allow(lpMinted, address(vault));
-        vault.mintConfidential(KIND_LP_SY_PT, actor, lpMinted);
-
-        emit LiquidityAdded(KIND_LP_SY_PT, euint256.unwrap(lpMinted));
+        externalEuint256 encryptedOther,
+        bytes calldata otherProof
+    ) external notMatured {
+        _addLiquidity(msg.sender, KIND_YT, KIND_LP_SY_YT, encryptedSy, syProof, encryptedOther, otherProof);
     }
 
-    function _removeLiquiditySYPT(
+    function removeLiquiditySYYT(
+        externalEuint256 encryptedLp,
+        bytes calldata lpProof
+    ) external notMatured {
+        _removeLiquidity(msg.sender, KIND_YT, KIND_LP_SY_YT, encryptedLp, lpProof);
+    }
+
+    function _addLiquidity(
         address actor,
+        uint8 otherKind,
+        uint8 lpKind,
+        externalEuint256 encryptedSy,
+        bytes calldata syProof,
+        externalEuint256 encryptedOther,
+        bytes calldata otherProof
+    ) internal {
+        euint256 syIn = _fromExternalAs(encryptedSy, syProof, actor);
+        euint256 otherIn = _fromExternalAs(encryptedOther, otherProof, actor);
+
+        Nox.allow(syIn, address(vault));
+        Nox.allow(otherIn, address(vault));
+        euint256 transferredSy = vault.transferConfidentialByMarket(KIND_SY, actor, address(this), syIn);
+        euint256 transferredOther = vault.transferConfidentialByMarket(otherKind, actor, address(this), otherIn);
+
+        euint256 totalLP = vault.confidentialTotalSupply(lpKind);
+        Nox.allowThis(totalLP);
+        euint256 syReserveAfter = vault.confidentialBalanceOf(KIND_SY, address(this));
+        euint256 otherReserveAfter = vault.confidentialBalanceOf(otherKind, address(this));
+        euint256 syReserveBefore = Nox.sub(syReserveAfter, transferredSy);
+        euint256 otherReserveBefore = Nox.sub(otherReserveAfter, transferredOther);
+
+        euint256 lpFromSy = Nox.div(Nox.mul(transferredSy, totalLP), syReserveBefore);
+        euint256 lpFromOther = Nox.div(Nox.mul(transferredOther, totalLP), otherReserveBefore);
+        ebool syIsLimit = Nox.le(lpFromSy, lpFromOther);
+        euint256 lpMinted = Nox.select(syIsLimit, lpFromSy, lpFromOther);
+
+        euint256 syUsed = Nox.div(Nox.mul(lpMinted, syReserveBefore), totalLP);
+        euint256 otherUsed = Nox.div(Nox.mul(lpMinted, otherReserveBefore), totalLP);
+        euint256 syRefund = Nox.sub(transferredSy, syUsed);
+        euint256 otherRefund = Nox.sub(transferredOther, otherUsed);
+
+        Nox.allow(syRefund, address(vault));
+        Nox.allow(otherRefund, address(vault));
+        vault.transferConfidentialByMarket(KIND_SY, address(this), actor, syRefund);
+        vault.transferConfidentialByMarket(otherKind, address(this), actor, otherRefund);
+
+        Nox.allow(lpMinted, address(vault));
+        vault.mintConfidential(lpKind, actor, lpMinted);
+
+        emit LiquidityAdded(lpKind, euint256.unwrap(lpMinted));
+    }
+
+    function _removeLiquidity(
+        address actor,
+        uint8 otherKind,
+        uint8 lpKind,
         externalEuint256 encryptedLp,
         bytes calldata lpProof
     ) internal {
         euint256 lpAmount = _fromExternalAs(encryptedLp, lpProof, actor);
         Nox.allow(lpAmount, address(vault));
-        euint256 burnedLp = vault.burnConfidential(KIND_LP_SY_PT, actor, lpAmount);
+        euint256 burnedLp = vault.burnConfidential(lpKind, actor, lpAmount);
 
-        // totalLP after burn; pre-burn = after + burned.
-        euint256 totalLPAfter = vault.confidentialTotalSupply(KIND_LP_SY_PT);
+        euint256 totalLPAfter = vault.confidentialTotalSupply(lpKind);
         Nox.allowThis(totalLPAfter);
         euint256 totalLPBefore = Nox.add(totalLPAfter, burnedLp);
 
         euint256 syReserve = vault.confidentialBalanceOf(KIND_SY, address(this));
-        euint256 ptReserve = vault.confidentialBalanceOf(KIND_PT, address(this));
+        euint256 otherReserve = vault.confidentialBalanceOf(otherKind, address(this));
         euint256 syOut = Nox.div(Nox.mul(burnedLp, syReserve), totalLPBefore);
-        euint256 ptOut = Nox.div(Nox.mul(burnedLp, ptReserve), totalLPBefore);
+        euint256 otherOut = Nox.div(Nox.mul(burnedLp, otherReserve), totalLPBefore);
 
         Nox.allow(syOut, address(vault));
-        Nox.allow(ptOut, address(vault));
+        Nox.allow(otherOut, address(vault));
         vault.transferConfidentialByMarket(KIND_SY, address(this), actor, syOut);
-        vault.transferConfidentialByMarket(KIND_PT, address(this), actor, ptOut);
+        vault.transferConfidentialByMarket(otherKind, address(this), actor, otherOut);
 
-        emit LiquidityRemoved(KIND_LP_SY_PT, euint256.unwrap(burnedLp));
+        emit LiquidityRemoved(lpKind, euint256.unwrap(burnedLp));
     }
 
     // ───────── Relayed (meta-tx) entry points ─────────
