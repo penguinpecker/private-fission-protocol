@@ -3,48 +3,105 @@ pragma solidity ^0.8.28;
 
 import {
     Nox,
+    ebool,
     euint256,
     externalEuint256
 } from "@iexec-nox/nox-protocol-contracts/contracts/sdk/Nox.sol";
-import {FissionPositionToken} from "./FissionPositionToken.sol";
+import {INoxCompute} from "@iexec-nox/nox-protocol-contracts/contracts/interfaces/INoxCompute.sol";
+import {TEEType} from "@iexec-nox/nox-protocol-contracts/contracts/shared/TypeUtils.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {FissionPositionVault} from "./FissionPositionVault.sol";
 import {AaveUSDCYieldAdapter} from "./AaveUSDCYieldAdapter.sol";
 
-contract FissionMarket {
-    uint256 public constant PRICE_SCALE = 1e18;
+contract FissionMarket is EIP712 {
     uint256 public constant USDC_TO_SY_SCALE = 1e12;
+    uint256 public constant FEE_BPS = 30;
+    uint256 public constant BPS_DENOMINATOR = 10_000;
+
+    uint8 public constant KIND_SY = 0;
+    uint8 public constant KIND_PT = 1;
+    uint8 public constant KIND_YT = 2;
+
     uint256 public immutable maturity;
 
-    FissionPositionToken public immutable sy;
-    FissionPositionToken public immutable pt;
-    FissionPositionToken public immutable yt;
+    FissionPositionVault public immutable vault;
     AaveUSDCYieldAdapter public immutable adapter;
     address public immutable owner;
 
-    event PublicDeposit(address indexed user, uint256 amount);
-    event ConfidentialFission(address indexed user, bytes32 encryptedAmount);
-    event ConfidentialCombine(address indexed user, bytes32 encryptedAmount);
-    event ConfidentialSwap(address indexed user, uint8 indexed route, bytes32 encryptedAmountIn);
+    euint256 private feeMultiplier;
+    euint256 private bpsDenominator;
+
+    struct RedeemRequest {
+        address user;
+        uint256 clearUsdc;
+        ebool eqHandle;
+        bool settled;
+    }
+
+    mapping(uint256 => RedeemRequest) public redeemRequests;
+    uint256 public nextRedeemId;
+
+    mapping(address => uint256) public nonces;
+
+    bytes32 private constant MINT_SY_TYPEHASH = keccak256(
+        "MintSY(address actor,uint256 clearAmount,uint256 nonce,uint256 deadline)"
+    );
+    bytes32 private constant FISSION_TYPEHASH = keccak256(
+        "Fission(address actor,bytes32 encryptedAmount,bytes32 proofHash,uint256 nonce,uint256 deadline)"
+    );
+    bytes32 private constant COMBINE_TYPEHASH = keccak256(
+        "Combine(address actor,bytes32 encryptedAmount,bytes32 proofHash,uint256 nonce,uint256 deadline)"
+    );
+    bytes32 private constant REDEEM_PT_TYPEHASH = keccak256(
+        "RedeemPT(address actor,bytes32 encryptedAmount,bytes32 proofHash,uint256 nonce,uint256 deadline)"
+    );
+    bytes32 private constant SWAP_TYPEHASH = keccak256(
+        "Swap(address actor,uint8 route,bytes32 encryptedAmountIn,bytes32 proofInHash,bytes32 encryptedMinAmountOut,bytes32 proofMinHash,uint256 nonce,uint256 deadline)"
+    );
+    bytes32 private constant REQUEST_REDEEM_SY_TYPEHASH = keccak256(
+        "RequestSYRedeem(address actor,uint256 clearUsdc,uint256 nonce,uint256 deadline)"
+    );
+
+    event PublicDeposit(address user, uint256 amount);
+    event PublicRedemption(address user, uint256 amount);
+    event ConfidentialAction(bytes32 handleA, bytes32 handleB);
     event ConfidentialAmmSeeded(bytes32 syReserve, bytes32 ptReserve, bytes32 ytReserve);
-    event ConfidentialAmmLiquidityAdded(address indexed provider, uint8 indexed reserve, bytes32 encryptedAmount);
+    event ConfidentialAmmLiquidityAdded(address provider, uint8 reserve, bytes32 encryptedAmount);
+    event RedeemRequested(uint256 id, address user, uint256 clearUsdc, bytes32 eqHandle);
+    event RedeemSettled(uint256 id, address user, uint256 clearUsdc);
 
     error OnlyOwner();
     error InvalidReserve();
+    error NotMatured();
+    error AlreadyMatured();
+    error InvalidRedemption();
+    error AlreadySettled();
+    error InsufficientBalance();
+    error InvalidDenomination();
+    error InvalidSignature();
+    error InvalidNonce();
+    error ExpiredDeadline();
+    error InvalidRoute();
 
-    constructor(uint256 maturity_) {
+    constructor(uint256 maturity_) EIP712("FissionMarket", "1") {
         owner = msg.sender;
         maturity = maturity_;
-        sy = new FissionPositionToken("Fission SY USDC", "SY-USDC", address(this));
-        pt = new FissionPositionToken("Fission PT USDC 30D", "PT-USDC-30D", address(this));
-        yt = new FissionPositionToken("Fission YT USDC 30D", "YT-USDC-30D", address(this));
+        vault = new FissionPositionVault(address(this));
         adapter = new AaveUSDCYieldAdapter(address(this));
+
+        feeMultiplier = Nox.toEuint256(BPS_DENOMINATOR - FEE_BPS);
+        bpsDenominator = Nox.toEuint256(BPS_DENOMINATOR);
+        Nox.allowThis(feeMultiplier);
+        Nox.allowThis(bpsDenominator);
 
         euint256 syReserve = Nox.toEuint256(1_000_000e18);
         euint256 ptReserve = Nox.toEuint256(1_026_000e18);
         euint256 ytReserve = Nox.toEuint256(12_000_000e18);
 
-        sy.mintConfidential(address(this), syReserve);
-        pt.mintConfidential(address(this), ptReserve);
-        yt.mintConfidential(address(this), ytReserve);
+        vault.mintConfidential(KIND_SY, address(this), syReserve);
+        vault.mintConfidential(KIND_PT, address(this), ptReserve);
+        vault.mintConfidential(KIND_YT, address(this), ytReserve);
 
         emit ConfidentialAmmSeeded(
             euint256.unwrap(syReserve),
@@ -58,39 +115,83 @@ contract FissionMarket {
         _;
     }
 
-    function mintSY(uint256 clearAmount) external {
-        adapter.pullAndSupply(msg.sender, clearAmount);
-        euint256 amount = Nox.toEuint256(clearAmount * USDC_TO_SY_SCALE);
-        sy.mintConfidential(msg.sender, amount);
-        emit PublicDeposit(msg.sender, clearAmount);
+    modifier notMatured() {
+        if (block.timestamp >= maturity) revert AlreadyMatured();
+        _;
     }
 
-    function fission(
-        externalEuint256 encryptedAmount,
-        bytes calldata proof
-    ) external {
-        euint256 amount = Nox.fromExternal(encryptedAmount, proof);
-        Nox.allow(amount, address(sy));
-        Nox.allow(amount, address(pt));
-        Nox.allow(amount, address(yt));
-        sy.burnConfidential(msg.sender, amount);
-        pt.mintConfidential(msg.sender, amount);
-        yt.mintConfidential(msg.sender, amount);
-        emit ConfidentialFission(msg.sender, euint256.unwrap(amount));
+    modifier onlyAfterMaturity() {
+        if (block.timestamp < maturity) revert NotMatured();
+        _;
     }
 
-    function combine(
-        externalEuint256 encryptedAmount,
-        bytes calldata proof
-    ) external {
-        euint256 amount = Nox.fromExternal(encryptedAmount, proof);
-        Nox.allow(amount, address(pt));
-        Nox.allow(amount, address(yt));
-        Nox.allow(amount, address(sy));
-        pt.burnConfidential(msg.sender, amount);
-        yt.burnConfidential(msg.sender, amount);
-        sy.mintConfidential(msg.sender, amount);
-        emit ConfidentialCombine(msg.sender, euint256.unwrap(amount));
+    // ───────── Direct entry points ─────────
+
+    function mintSY(uint256 clearAmount) external notMatured {
+        _mintSY(msg.sender, clearAmount);
+    }
+
+    function fission(externalEuint256 encryptedAmount, bytes calldata proof) external notMatured {
+        _fission(msg.sender, encryptedAmount, proof);
+    }
+
+    function combine(externalEuint256 encryptedAmount, bytes calldata proof) external {
+        _combine(msg.sender, encryptedAmount, proof);
+    }
+
+    function redeemPT(externalEuint256 encryptedAmount, bytes calldata proof) external onlyAfterMaturity {
+        _redeemPT(msg.sender, encryptedAmount, proof);
+    }
+
+    function requestSYRedeem(uint256 clearUsdc) external returns (uint256 id) {
+        return _requestSYRedeem(msg.sender, clearUsdc);
+    }
+
+    function swapSYForPT(
+        externalEuint256 encryptedAmountIn,
+        bytes calldata proofIn,
+        externalEuint256 encryptedMinAmountOut,
+        bytes calldata proofMin
+    ) external notMatured {
+        _swap(msg.sender, KIND_SY, KIND_PT, encryptedAmountIn, proofIn, encryptedMinAmountOut, proofMin);
+    }
+
+    function swapSYForYT(
+        externalEuint256 encryptedAmountIn,
+        bytes calldata proofIn,
+        externalEuint256 encryptedMinAmountOut,
+        bytes calldata proofMin
+    ) external notMatured {
+        _swap(msg.sender, KIND_SY, KIND_YT, encryptedAmountIn, proofIn, encryptedMinAmountOut, proofMin);
+    }
+
+    function sellPTForSY(
+        externalEuint256 encryptedAmountIn,
+        bytes calldata proofIn,
+        externalEuint256 encryptedMinAmountOut,
+        bytes calldata proofMin
+    ) external notMatured {
+        _swap(msg.sender, KIND_PT, KIND_SY, encryptedAmountIn, proofIn, encryptedMinAmountOut, proofMin);
+    }
+
+    function sellYTForSY(
+        externalEuint256 encryptedAmountIn,
+        bytes calldata proofIn,
+        externalEuint256 encryptedMinAmountOut,
+        bytes calldata proofMin
+    ) external notMatured {
+        _swap(msg.sender, KIND_YT, KIND_SY, encryptedAmountIn, proofIn, encryptedMinAmountOut, proofMin);
+    }
+
+    function settleSYRedeem(uint256 id, bytes calldata decryptionProof) external {
+        RedeemRequest storage r = redeemRequests[id];
+        if (r.user == address(0)) revert InvalidRedemption();
+        if (r.settled) revert AlreadySettled();
+        bool ok = Nox.publicDecrypt(r.eqHandle, decryptionProof);
+        if (!ok) revert InsufficientBalance();
+        r.settled = true;
+        adapter.withdrawTo(r.user, r.clearUsdc);
+        emit RedeemSettled(id, r.user, r.clearUsdc);
     }
 
     function addAmmLiquidity(
@@ -98,98 +199,259 @@ contract FissionMarket {
         externalEuint256 encryptedAmount,
         bytes calldata proof
     ) external onlyOwner {
+        if (reserve > KIND_YT) revert InvalidReserve();
         euint256 amount = Nox.fromExternal(encryptedAmount, proof);
-        _mintAmmReserve(reserve, amount);
+        Nox.allow(amount, address(vault));
+        vault.mintConfidential(reserve, address(this), amount);
         emit ConfidentialAmmLiquidityAdded(msg.sender, reserve, euint256.unwrap(amount));
     }
 
-    function swapSYForPT(
+    // ───────── Relayed (meta-tx) entry points ─────────
+
+    function relayedMintSY(
+        address actor,
+        uint256 clearAmount,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external notMatured {
+        bytes32 structHash = keccak256(abi.encode(MINT_SY_TYPEHASH, actor, clearAmount, nonce, deadline));
+        _verifyAndConsume(structHash, actor, nonce, deadline, signature);
+        _mintSY(actor, clearAmount);
+    }
+
+    function relayedFission(
+        address actor,
         externalEuint256 encryptedAmount,
-        bytes calldata proof
-    ) external {
-        euint256 amountIn = Nox.fromExternal(encryptedAmount, proof);
-        Nox.allow(amountIn, address(sy));
-        euint256 transferredIn = sy.transferConfidentialByMarket(msg.sender, address(this), amountIn);
-        euint256 amountOut = _constantProductOut(
-            transferredIn,
-            sy.confidentialBalanceOf(address(this)),
-            pt.confidentialBalanceOf(address(this))
-        );
-        pt.transferConfidentialByMarket(address(this), msg.sender, amountOut);
-        emit ConfidentialSwap(msg.sender, 1, euint256.unwrap(transferredIn));
+        bytes calldata proof,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external notMatured {
+        bytes32 structHash = keccak256(abi.encode(
+            FISSION_TYPEHASH,
+            actor,
+            externalEuint256.unwrap(encryptedAmount),
+            keccak256(proof),
+            nonce,
+            deadline
+        ));
+        _verifyAndConsume(structHash, actor, nonce, deadline, signature);
+        _fission(actor, encryptedAmount, proof);
     }
 
-    function swapSYForYT(
+    function relayedCombine(
+        address actor,
         externalEuint256 encryptedAmount,
-        bytes calldata proof
+        bytes calldata proof,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
     ) external {
-        euint256 amountIn = Nox.fromExternal(encryptedAmount, proof);
-        Nox.allow(amountIn, address(sy));
-        euint256 transferredIn = sy.transferConfidentialByMarket(msg.sender, address(this), amountIn);
-        euint256 amountOut = _constantProductOut(
-            transferredIn,
-            sy.confidentialBalanceOf(address(this)),
-            yt.confidentialBalanceOf(address(this))
-        );
-        yt.transferConfidentialByMarket(address(this), msg.sender, amountOut);
-        emit ConfidentialSwap(msg.sender, 2, euint256.unwrap(transferredIn));
+        bytes32 structHash = keccak256(abi.encode(
+            COMBINE_TYPEHASH,
+            actor,
+            externalEuint256.unwrap(encryptedAmount),
+            keccak256(proof),
+            nonce,
+            deadline
+        ));
+        _verifyAndConsume(structHash, actor, nonce, deadline, signature);
+        _combine(actor, encryptedAmount, proof);
     }
 
-    function sellPTForSY(
+    function relayedRedeemPT(
+        address actor,
         externalEuint256 encryptedAmount,
-        bytes calldata proof
-    ) external {
-        euint256 amountIn = Nox.fromExternal(encryptedAmount, proof);
-        Nox.allow(amountIn, address(pt));
-        euint256 transferredIn = pt.transferConfidentialByMarket(msg.sender, address(this), amountIn);
-        euint256 amountOut = _constantProductOut(
-            transferredIn,
-            pt.confidentialBalanceOf(address(this)),
-            sy.confidentialBalanceOf(address(this))
-        );
-        sy.transferConfidentialByMarket(address(this), msg.sender, amountOut);
-        emit ConfidentialSwap(msg.sender, 3, euint256.unwrap(transferredIn));
+        bytes calldata proof,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external onlyAfterMaturity {
+        bytes32 structHash = keccak256(abi.encode(
+            REDEEM_PT_TYPEHASH,
+            actor,
+            externalEuint256.unwrap(encryptedAmount),
+            keccak256(proof),
+            nonce,
+            deadline
+        ));
+        _verifyAndConsume(structHash, actor, nonce, deadline, signature);
+        _redeemPT(actor, encryptedAmount, proof);
     }
 
-    function sellYTForSY(
-        externalEuint256 encryptedAmount,
-        bytes calldata proof
-    ) external {
-        euint256 amountIn = Nox.fromExternal(encryptedAmount, proof);
-        Nox.allow(amountIn, address(yt));
-        euint256 transferredIn = yt.transferConfidentialByMarket(msg.sender, address(this), amountIn);
-        euint256 amountOut = _constantProductOut(
-            transferredIn,
-            yt.confidentialBalanceOf(address(this)),
-            sy.confidentialBalanceOf(address(this))
-        );
-        sy.transferConfidentialByMarket(address(this), msg.sender, amountOut);
-        emit ConfidentialSwap(msg.sender, 4, euint256.unwrap(transferredIn));
+    function relayedRequestSYRedeem(
+        address actor,
+        uint256 clearUsdc,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external returns (uint256 id) {
+        bytes32 structHash = keccak256(abi.encode(REQUEST_REDEEM_SY_TYPEHASH, actor, clearUsdc, nonce, deadline));
+        _verifyAndConsume(structHash, actor, nonce, deadline, signature);
+        return _requestSYRedeem(actor, clearUsdc);
     }
 
-    function _mintAmmReserve(uint8 reserve, euint256 amount) internal {
-        if (reserve == 0) {
-            Nox.allow(amount, address(sy));
-            sy.mintConfidential(address(this), amount);
-        } else if (reserve == 1) {
-            Nox.allow(amount, address(pt));
-            pt.mintConfidential(address(this), amount);
-        } else if (reserve == 2) {
-            Nox.allow(amount, address(yt));
-            yt.mintConfidential(address(this), amount);
-        } else {
-            revert InvalidReserve();
-        }
+    function relayedSwap(
+        address actor,
+        uint8 route,
+        externalEuint256 encryptedAmountIn,
+        bytes calldata proofIn,
+        externalEuint256 encryptedMinAmountOut,
+        bytes calldata proofMin,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external notMatured {
+        bytes32 structHash = keccak256(abi.encode(
+            SWAP_TYPEHASH,
+            actor,
+            route,
+            externalEuint256.unwrap(encryptedAmountIn),
+            keccak256(proofIn),
+            externalEuint256.unwrap(encryptedMinAmountOut),
+            keccak256(proofMin),
+            nonce,
+            deadline
+        ));
+        _verifyAndConsume(structHash, actor, nonce, deadline, signature);
+        (uint8 kindIn, uint8 kindOut) = _routeKinds(route);
+        _swap(actor, kindIn, kindOut, encryptedAmountIn, proofIn, encryptedMinAmountOut, proofMin);
     }
 
-    function _constantProductOut(
-        euint256 amountIn,
-        euint256 reserveInAfterTransfer,
-        euint256 reserveOut
+    function DOMAIN_SEPARATOR() external view returns (bytes32) {
+        return _domainSeparatorV4();
+    }
+
+    // ───────── Internals ─────────
+
+    function _verifyAndConsume(
+        bytes32 structHash,
+        address actor,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) internal {
+        if (block.timestamp > deadline) revert ExpiredDeadline();
+        if (nonces[actor] != nonce) revert InvalidNonce();
+        address recovered = ECDSA.recover(_hashTypedDataV4(structHash), signature);
+        if (recovered != actor) revert InvalidSignature();
+        nonces[actor] = nonce + 1;
+    }
+
+    function _routeKinds(uint8 route) internal pure returns (uint8 kindIn, uint8 kindOut) {
+        if (route == 1) return (KIND_SY, KIND_PT);
+        if (route == 2) return (KIND_SY, KIND_YT);
+        if (route == 3) return (KIND_PT, KIND_SY);
+        if (route == 4) return (KIND_YT, KIND_SY);
+        revert InvalidRoute();
+    }
+
+    function _fromExternalAs(
+        externalEuint256 externalHandle,
+        bytes calldata proof,
+        address actor
     ) internal returns (euint256) {
-        euint256 reserveInBeforeTransfer = Nox.sub(reserveInAfterTransfer, amountIn);
-        euint256 invariant = Nox.mul(reserveInBeforeTransfer, reserveOut);
-        euint256 newReserveOut = Nox.div(invariant, reserveInAfterTransfer);
-        return Nox.sub(reserveOut, newReserveOut);
+        bytes32 handle = externalEuint256.unwrap(externalHandle);
+        INoxCompute(Nox.noxComputeContract()).validateInputProof(handle, actor, proof, TEEType.Uint256);
+        return euint256.wrap(handle);
+    }
+
+    function _mintSY(address actor, uint256 clearAmount) internal {
+        if (!_isAllowedDenomination(clearAmount)) revert InvalidDenomination();
+        adapter.pullAndSupply(actor, clearAmount);
+        euint256 amount = Nox.toEuint256(clearAmount * USDC_TO_SY_SCALE);
+        vault.mintConfidential(KIND_SY, actor, amount);
+        emit PublicDeposit(actor, clearAmount);
+    }
+
+    function _fission(address actor, externalEuint256 encryptedAmount, bytes calldata proof) internal {
+        euint256 amount = _fromExternalAs(encryptedAmount, proof, actor);
+        Nox.allow(amount, address(vault));
+        vault.burnConfidential(KIND_SY, actor, amount);
+        vault.mintConfidential(KIND_PT, actor, amount);
+        vault.mintConfidential(KIND_YT, actor, amount);
+        emit ConfidentialAction(euint256.unwrap(amount), bytes32(0));
+    }
+
+    function _combine(address actor, externalEuint256 encryptedAmount, bytes calldata proof) internal {
+        euint256 amount = _fromExternalAs(encryptedAmount, proof, actor);
+        Nox.allow(amount, address(vault));
+        vault.burnConfidential(KIND_PT, actor, amount);
+        vault.burnConfidential(KIND_YT, actor, amount);
+        vault.mintConfidential(KIND_SY, actor, amount);
+        emit ConfidentialAction(euint256.unwrap(amount), bytes32(0));
+    }
+
+    function _redeemPT(address actor, externalEuint256 encryptedAmount, bytes calldata proof) internal {
+        euint256 amount = _fromExternalAs(encryptedAmount, proof, actor);
+        Nox.allow(amount, address(vault));
+        vault.burnConfidential(KIND_PT, actor, amount);
+        vault.mintConfidential(KIND_SY, actor, amount);
+        emit ConfidentialAction(euint256.unwrap(amount), bytes32(0));
+    }
+
+    function _requestSYRedeem(address actor, uint256 clearUsdc) internal returns (uint256 id) {
+        if (!_isAllowedDenomination(clearUsdc)) revert InvalidDenomination();
+        id = ++nextRedeemId;
+        euint256 requested = Nox.toEuint256(clearUsdc * USDC_TO_SY_SCALE);
+        Nox.allow(requested, address(vault));
+        euint256 transferred = vault.burnConfidential(KIND_SY, actor, requested);
+        ebool ok = Nox.eq(transferred, requested);
+        Nox.allowPublicDecryption(ok);
+        Nox.allowThis(ok);
+        redeemRequests[id] = RedeemRequest({
+            user: actor,
+            clearUsdc: clearUsdc,
+            eqHandle: ok,
+            settled: false
+        });
+        emit RedeemRequested(id, actor, clearUsdc, ebool.unwrap(ok));
+    }
+
+    function _swap(
+        address actor,
+        uint8 kindIn,
+        uint8 kindOut,
+        externalEuint256 encryptedAmountIn,
+        bytes calldata proofIn,
+        externalEuint256 encryptedMinAmountOut,
+        bytes calldata proofMin
+    ) internal {
+        euint256 amountIn = _fromExternalAs(encryptedAmountIn, proofIn, actor);
+        euint256 minAmountOut = _fromExternalAs(encryptedMinAmountOut, proofMin, actor);
+        Nox.allow(amountIn, address(vault));
+
+        euint256 transferredIn = vault.transferConfidentialByMarket(kindIn, actor, address(this), amountIn);
+
+        euint256 reserveInAfter = vault.confidentialBalanceOf(kindIn, address(this));
+        euint256 reserveOut = vault.confidentialBalanceOf(kindOut, address(this));
+        euint256 reserveInBefore = Nox.sub(reserveInAfter, transferredIn);
+
+        euint256 amountInWithFee = Nox.mul(transferredIn, feeMultiplier);
+        euint256 numerator = Nox.mul(amountInWithFee, reserveOut);
+        euint256 denominator = Nox.add(Nox.mul(reserveInBefore, bpsDenominator), amountInWithFee);
+        euint256 amountOut = Nox.div(numerator, denominator);
+
+        ebool ok = Nox.ge(amountOut, minAmountOut);
+        euint256 zero = Nox.toEuint256(0);
+        euint256 effectiveOut = Nox.select(ok, amountOut, zero);
+        euint256 refundIn = Nox.select(ok, zero, transferredIn);
+
+        Nox.allow(effectiveOut, address(vault));
+        vault.transferConfidentialByMarket(kindOut, address(this), actor, effectiveOut);
+
+        Nox.allow(refundIn, address(vault));
+        vault.transferConfidentialByMarket(kindIn, address(this), actor, refundIn);
+
+        emit ConfidentialAction(euint256.unwrap(transferredIn), euint256.unwrap(effectiveOut));
+    }
+
+    function _isAllowedDenomination(uint256 clearAmount) internal pure returns (bool) {
+        return
+            clearAmount == 10 * 1e6 ||
+            clearAmount == 100 * 1e6 ||
+            clearAmount == 1_000 * 1e6 ||
+            clearAmount == 10_000 * 1e6;
     }
 }

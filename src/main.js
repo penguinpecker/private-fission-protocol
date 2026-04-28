@@ -6,6 +6,10 @@ import {
   decryptPortfolio,
   fissionSY,
   mintSY,
+  readMaturity,
+  redeemPT,
+  requestSYRedeem,
+  settleSYRedeem,
   swapWithAmm
 } from './lib/fissionApi.js';
 import { FISSION_ADDRESSES } from './lib/addresses.js';
@@ -57,10 +61,14 @@ const state = {
   strategy: 'pt',
   action: 'buy',
   amount: '1,000',
-  mintAmount: '10',
+  mintAmount: '100',
+  redeemUsdcAmount: '100',
+  redeemPtAmount: '10',
   account: '',
   txStatus: '',
-  portfolio: null
+  portfolio: null,
+  maturity: null,
+  pendingRedeem: null
 };
 
 const markets = [
@@ -69,12 +77,22 @@ const markets = [
     name: 'Aave USDC 30D',
     asset: 'USDC',
     source: 'Aave V3 Arbitrum Sepolia',
-    maturity: 'May 27, 2026',
     market: FISSION_ADDRESSES.market,
     adapter: FISSION_ADDRESSES.adapter,
     status: 'Live'
   }
 ];
+
+function maturityLabel() {
+  if (!state.maturity) return 'Loading…';
+  const d = new Date(Number(state.maturity) * 1000);
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function isMatured() {
+  if (!state.maturity) return false;
+  return Math.floor(Date.now() / 1000) >= Number(state.maturity);
+}
 
 const navItems = [
   { id: 'home', label: 'Home', icon: '⌂' },
@@ -119,6 +137,10 @@ async function connectWallet() {
     state.txStatus = '';
     toast('Wallet connected. Private markets unlocked.');
     resetScroll();
+    readMaturity().then((m) => {
+      state.maturity = m;
+      render();
+    }).catch(() => {});
   } catch (error) {
     state.txStatus = '';
     toast(error.message || 'Wallet connection failed');
@@ -320,7 +342,7 @@ function screenMarkets() {
           <div class="market-metrics">
             ${metric('Market contract', shortAddress(market.market), 'deployed')}
             ${metric('Aave adapter', shortAddress(market.adapter), 'USDC reserve')}
-            ${metric('Maturity', '30D', market.maturity)}
+            ${metric('Maturity', maturityLabel(), isMatured() ? 'matured' : 'pre-maturity')}
           </div>
         </div>
       `).join('')}
@@ -348,7 +370,9 @@ function strategyCards(clickable) {
 
 function screenStrategy() {
   const item = strategies[state.strategy];
-  const actionDisabled = state.strategy === 'pair' && state.action === 'swap';
+  const actions = state.strategy === 'pair' ? ['buy', 'sell'] : ['buy', 'sell'];
+  if (!actions.includes(state.action)) state.action = 'buy';
+  const actionDisabled = isMatured() && state.strategy !== 'pt';
   return `
     <section class="strategy-detail">
       <div class="detail-hero">
@@ -393,7 +417,7 @@ function screenStrategy() {
             <span>Input amount, output amount, and resulting balance are stored as encrypted handles.</span>
           </div>
           <div class="segmented compact">
-            ${['buy', 'swap', 'sell'].map((action) => `
+            ${actions.map((action) => `
               <button class="${state.action === action ? 'active' : ''}" data-action-tab="${action}">${action}</button>
             `).join('')}
           </div>
@@ -407,8 +431,10 @@ function screenStrategy() {
             </div>
           </div>
           <button class="primary full" ${actionDisabled ? 'disabled' : 'data-modal="trade"'}>
-            ${actionDisabled ? 'Use PT or YT tabs to swap one leg' : `${state.action} with confidential AMM`}
+            ${actionDisabled ? 'Market matured · use redeem' : `${state.action} with confidential AMM`}
           </button>
+          ${isMatured() && state.strategy === 'pt' ? '<button class="secondary full" data-modal="redeem-pt">Redeem PT 1:1 for SY</button>' : ''}
+          <button class="ghost full" data-modal="redeem-sy">Redeem SY for USDC</button>
           ${state.txStatus ? `<div class="tx-status">${state.txStatus}</div>` : ''}
         </div>
       </div>
@@ -477,6 +503,22 @@ function amountInput(label, value, token, key) {
   `;
 }
 
+const ALLOWED_DENOMINATIONS = ['10', '100', '1000', '10000'];
+
+function denominationPicker(label, value, token, key) {
+  return `
+    <div class="amount-box">
+      <span>${label}</span>
+      <div class="segmented compact" style="margin-top:8px">
+        ${ALLOWED_DENOMINATIONS.map((d) => `
+          <button class="${value === d ? 'active' : ''}" data-denom-key="${key}" data-denom-value="${d}">${Number(d).toLocaleString()} ${token}</button>
+        `).join('')}
+      </div>
+      <small style="display:block;margin-top:6px;opacity:0.7">Anonymity-set bucket. Split larger notional into multiple denominated mints.</small>
+    </div>
+  `;
+}
+
 function screenPortfolio() {
   const balances = state.portfolio
     ? [
@@ -532,8 +574,10 @@ function modal(type) {
     how: ['How Fission markets work', 'USDC enters a yield source and becomes confidential SY. SY can be split into encrypted PT and YT. PT targets fixed principal redemption; YT isolates variable future yield. Both trade through a confidential AMM.', 'Enter app', 'connect'],
     chart: ['Chart details', 'The chart is a strategy payoff schematic. Live swap execution is handled by the deployed confidential AMM without exposing public quote previews.', 'Close', 'close'],
     mint: ['Mint confidential SY', 'Approve USDC to the deployed Aave adapter, then mint confidential SY into the Fission market. The USDC deposit is public; the resulting SY balance is confidential.', 'Approve + mint SY', 'tx'],
-    trade: ['Confidential AMM trade', 'Your trade amount is encrypted before submission. The AMM updates your confidential SY, PT, or YT balances after execution.', 'Confirm trade', 'tx'],
-    decrypt: ['Decrypt balances', 'Request a gasless Nox decryption for your SY, PT, and YT handles. Only this wallet can read them.', 'Decrypt now', 'tx']
+    trade: ['Confidential AMM trade', 'Your trade amount is encrypted before submission. A 30 bps fee accrues to LPs. If the encrypted fill falls below your slippage minimum the input is refunded — both branches execute as encrypted no-ops so observers cannot tell which path ran.', 'Confirm trade', 'tx'],
+    decrypt: ['Decrypt balances', 'Request a gasless Nox decryption for your SY, PT, and YT handles. Only this wallet can read them.', 'Decrypt now', 'tx'],
+    'redeem-pt': ['Redeem PT for SY', 'After maturity, every PT redeems 1:1 for confidential SY. Both legs stay encrypted; only the fact a redemption occurred is public.', 'Redeem PT', 'tx'],
+    'redeem-sy': ['Redeem SY for USDC', 'Step 1 burns your confidential SY and stakes a Nox attestation that the burn matched the requested USDC amount. Step 2 settles the redemption once the Nox network signs the attestation. The USDC amount you redeem is public — converting back to a public asset reveals that exit size.', 'Submit redeem request', 'tx']
   }[type];
 
   return `
@@ -543,12 +587,15 @@ function modal(type) {
         <div class="modal-icon">◈</div>
         <h2>${copy[0]}</h2>
         <p>${copy[1]}</p>
-        ${type === 'mint' ? amountInput('USDC amount', state.mintAmount, 'USDC', 'mintAmount') : ''}
+        ${type === 'mint' ? denominationPicker('USDC denomination', state.mintAmount, 'USDC', 'mintAmount') : ''}
+        ${type === 'redeem-pt' ? amountInput('PT amount', state.redeemPtAmount, 'PT-USDC-30D', 'redeemPtAmount') : ''}
+        ${type === 'redeem-sy' ? denominationPicker('USDC denomination', state.redeemUsdcAmount, 'USDC', 'redeemUsdcAmount') : ''}
+        ${type === 'redeem-sy' && state.pendingRedeem ? `<div class="privacy-stack compact"><span>Pending request id ${state.pendingRedeem.id}</span><span>Settle once the Nox attestation is fetched.</span></div>` : ''}
         ${type === 'trade' ? `<div class="privacy-stack compact"><span>${tradeRouteLabel()}</span><span>Amount encrypted before contract execution.</span></div>` : ''}
         ${state.txStatus ? `<div class="tx-status">${state.txStatus}</div>` : ''}
         <div class="modal-actions">
           <button class="secondary" data-close>Cancel</button>
-          <button class="primary" data-modal-action="${copy[3]}">${copy[2]}</button>
+          ${type === 'redeem-sy' && state.pendingRedeem ? '<button class="primary" data-modal-action="settle-redeem">Settle redemption</button>' : `<button class="primary" data-modal-action="${copy[3]}">${copy[2]}</button>`}
         </div>
       </div>
     </div>
@@ -582,6 +629,9 @@ function render() {
       if (el.dataset.modalAction === 'tx') {
         await executeModalTransaction();
       }
+      if (el.dataset.modalAction === 'settle-redeem') {
+        await settlePendingRedeem();
+      }
     });
   });
   document.querySelectorAll('[data-strategy]').forEach((el) => {
@@ -590,6 +640,13 @@ function render() {
   document.querySelectorAll('[data-action-tab]').forEach((el) => {
     el.addEventListener('click', () => {
       state.action = el.dataset.actionTab;
+      render();
+    });
+  });
+  document.querySelectorAll('[data-denom-key]').forEach((el) => {
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      state[el.dataset.denomKey] = el.dataset.denomValue;
       render();
     });
   });
@@ -633,9 +690,47 @@ async function executeModalTransaction() {
       state.modal = null;
       state.txStatus = '';
       toast('Balances decrypted locally');
+      return;
+    }
+
+    if (modal === 'redeem-pt') {
+      state.txStatus = 'Encrypting PT amount and submitting redeem...';
+      render();
+      const txHash = await redeemPT(state.redeemPtAmount);
+      state.modal = null;
+      state.txStatus = '';
+      toast(`PT redeemed for SY: ${shortHash(txHash)}`);
+      return;
+    }
+
+    if (modal === 'redeem-sy') {
+      state.txStatus = 'Burning encrypted SY and staking attestation...';
+      render();
+      const ticket = await requestSYRedeem(state.redeemUsdcAmount);
+      state.pendingRedeem = ticket;
+      state.txStatus = `Burn submitted: ${shortHash(ticket.txHash)}. Settle once attestation is signed.`;
+      render();
+      return;
     }
   } catch (error) {
     state.txStatus = error.shortMessage || error.message || 'Transaction failed';
+    render();
+  }
+}
+
+async function settlePendingRedeem() {
+  if (!state.pendingRedeem) return;
+  try {
+    state.txStatus = 'Fetching Nox attestation and settling redemption...';
+    render();
+    const txHash = await settleSYRedeem(state.pendingRedeem);
+    const settled = state.pendingRedeem;
+    state.pendingRedeem = null;
+    state.modal = null;
+    state.txStatus = '';
+    toast(`USDC redeemed (${settled.clearUsdc}): ${shortHash(txHash)}`);
+  } catch (error) {
+    state.txStatus = error.shortMessage || error.message || 'Settle failed';
     render();
   }
 }
@@ -644,18 +739,16 @@ async function executeStrategyTransaction() {
   if (state.strategy === 'pair') {
     if (state.action === 'buy') return fissionSY(state.amount);
     if (state.action === 'sell') return combinePTAndYT(state.amount);
-    throw new Error('Use PT or YT tabs to swap one leg.');
+    throw new Error('Unknown action');
   }
 
   if (state.strategy === 'pt') {
     if (state.action === 'buy') return swapWithAmm('syToPt', state.amount);
-    if (state.action === 'sell') return swapWithAmm('ptToSy', state.amount);
     return swapWithAmm('ptToSy', state.amount);
   }
 
   if (state.strategy === 'yt') {
     if (state.action === 'buy') return swapWithAmm('syToYt', state.amount);
-    if (state.action === 'sell') return swapWithAmm('ytToSy', state.amount);
     return swapWithAmm('ytToSy', state.amount);
   }
 

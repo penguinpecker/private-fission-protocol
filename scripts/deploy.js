@@ -36,9 +36,7 @@ async function main() {
     deployer: wallet.address,
     maturity,
     market: marketAddress,
-    sy: await market.sy(),
-    pt: await market.pt(),
-    yt: await market.yt(),
+    vault: await market.vault(),
     adapter: await market.adapter()
   };
 
