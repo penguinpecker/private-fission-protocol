@@ -78,6 +78,22 @@ contract FissionPositionVault {
         return _totalSupplies[kind];
     }
 
+    /**
+     * Returns `totalSupply(kind) - balanceOf(kind, market)`. Used by the market at maturity to
+     * snapshot the encrypted user-held supply (everything that isn't AMM reserve). The market
+     * gets `Nox.allow` on the resulting handle so it can compute on it later.
+     */
+    function confidentialUserHeldSupply(uint8 kind)
+        external
+        onlyMarket
+        validKind(kind)
+        returns (euint256 userHeld)
+    {
+        userHeld = Nox.sub(_totalSupplies[kind], _balances[kind][market]);
+        Nox.allowThis(userHeld);
+        Nox.allow(userHeld, market);
+    }
+
     function mintConfidential(uint8 kind, address to, euint256 amount)
         external
         onlyMarket

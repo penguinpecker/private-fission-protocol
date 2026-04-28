@@ -26,5 +26,8 @@
     "hardhat": "^3.4.1",
     "viem": "^2.48.4",
     "vite": "^7.1.12"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-node-test-runner": "^3.0.14"
   }
 }

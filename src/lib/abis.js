@@ -99,6 +99,95 @@ export const fissionMarketAbi = [
   },
   {
     type: 'function',
+    name: 'maturitySnapshotTaken',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'bool' }]
+  },
+  {
+    type: 'function',
+    name: 'maturityYieldUsdc',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint256' }]
+  },
+  {
+    type: 'function',
+    name: 'yieldDistributed',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint256' }]
+  },
+  {
+    type: 'function',
+    name: 'snapshotMaturity',
+    stateMutability: 'nonpayable',
+    inputs: [],
+    outputs: []
+  },
+  {
+    type: 'function',
+    name: 'redeemYT',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'encryptedAmount', type: 'bytes32' },
+      { name: 'proof', type: 'bytes' }
+    ],
+    outputs: [{ name: 'id', type: 'uint256' }]
+  },
+  {
+    type: 'function',
+    name: 'settleYTRedeem',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'id', type: 'uint256' },
+      { name: 'decryptionProof', type: 'bytes' }
+    ],
+    outputs: []
+  },
+  {
+    type: 'function',
+    name: 'ytRedeemRequests',
+    stateMutability: 'view',
+    inputs: [{ name: 'id', type: 'uint256' }],
+    outputs: [
+      { name: 'user', type: 'address' },
+      { name: 'yieldHandle', type: 'bytes32' },
+      { name: 'settled', type: 'bool' }
+    ]
+  },
+  {
+    type: 'function',
+    name: 'nextYTRedeemId',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint256' }]
+  },
+  {
+    type: 'function',
+    name: 'relayedRedeemYT',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'actor', type: 'address' },
+      { name: 'encryptedAmount', type: 'bytes32' },
+      { name: 'proof', type: 'bytes' },
+      { name: 'nonce', type: 'uint256' },
+      { name: 'deadline', type: 'uint256' },
+      { name: 'signature', type: 'bytes' }
+    ],
+    outputs: [{ name: 'id', type: 'uint256' }]
+  },
+  {
+    type: 'event',
+    name: 'YTRedeemRequested',
+    inputs: [
+      { name: 'id', type: 'uint256', indexed: false },
+      { name: 'user', type: 'address', indexed: false },
+      { name: 'yieldHandle', type: 'bytes32', indexed: false }
+    ]
+  },
+  {
+    type: 'function',
     name: 'harvestAaveYield',
     stateMutability: 'nonpayable',
     inputs: [
