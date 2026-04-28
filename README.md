@@ -60,24 +60,25 @@ Users need Arbitrum Sepolia USDC in their wallet before minting SY: `mintSY` tra
 - Pre-maturity, `notMatured`-gated entry points: `mintSY`, `fission`, all four swap routes, `addLiquidity*`, `removeLiquidity*`.
 - `combine` (PT + YT → SY) stays open both pre- and post-maturity.
 - **PT redemption** (post-maturity): `redeemPT(handle, proof)` burns encrypted PT 1:1 for SY.
-- **SY → USDC redemption** (any time): two-step. `requestSYRedeem(clearUsdc)` burns the equivalent encrypted SY and stakes a `Nox.eq(transferred, requested)` handle for public decryption. `settleSYRedeem(id, proof)` validates the proof, decrements `principalDeposited`, and withdraws cleartext USDC from Aave to the user.
-- **YT yield claim** (post-maturity, post-snapshot): `snapshotMaturity()` locks `maturityYieldUsdc = aaveBalance - principalDeposited` and the encrypted user-held YT supply. `redeemYT(handle, proof)` burns user's YT and stakes their pro-rata yield handle (`burned × yieldUsdc / userTotalYT`) for public decryption. `settleYTRedeem(id, proof)` decrypts and pays out the cleartext USDC slice.
-- Yield buffer guard: `harvestAaveYield` reserves `principalDeposited + (maturityYieldUsdc - yieldDistributed)` so an admin sweep cannot dip into either user principal or unclaimed YT yield.
+- **SY → USDC redemption** (any time): two-step with anonymized state. `requestSYRedeem(clearUsdc, commit)` burns the equivalent encrypted SY and stakes the burned-amount handle for public decryption. The on-chain request stores `commit = keccak256(recipient, salt)` instead of the recipient address, plus the encrypted handle — no cleartext amount in storage. `settleSYRedeem(id, recipient, salt, proof)` is gated by a 5-minute `REDEEM_MIN_DELAY`, validates the commit, decrypts the burned amount, decrements `principalDeposited`, and withdraws USDC from the adapter (paying out of the float buffer when possible).
+- **YT yield claim** (post-maturity, post-snapshot): `snapshotMaturity()` locks `maturityYieldUsdc = aaveBalance - principalDeposited`, folds it into `principalDeposited`, and locks the encrypted user-held YT supply. `redeemYTToSY(handle, proof)` burns user's YT and **mints encrypted SY** equal to their pro-rata yield share — no public decryption, no cleartext per-claim payout. The user later exits via the standard SY → USDC bucket path.
+- Yield buffer guard: `harvestAaveYield` reserves `principalDeposited` (which now includes folded yield post-snapshot) so an admin sweep cannot dip into either user principal or unclaimed YT yield.
 
 ## Privacy Layers
 
 1. **Uniform action events.** Fission, combine, redeemPT, all four AMM routes, LP add/remove emit a single event signature with two opaque handles and no indexed topics. The standard ERC-7984 `ConfidentialTransfer` event is suppressed by the vault.
 2. **Single vault address.** SY, PT, YT, LP-SY-PT, LP-SY-YT all live in one contract — observers can't filter by leg via contract address.
 3. **Trimmed Nox ACL surface.** Internal allows are pruned to only what's strictly needed; the public allow-graph carries fewer "X can decrypt Y" entries per action.
-4. **Fixed-denomination entry/exit.** `mintSY` and `requestSYRedeem` accept only `{10, 100, 1000, 10000}` USDC, replacing the exact-amount fingerprint with a four-bucket anonymity set.
+4. **Fixed-denomination entry/exit.** `mintSY` and `requestSYRedeem` accept only `{1, 10, 100, 1000, 10000}` USDC, replacing the exact-amount fingerprint with a five-bucket anonymity set. The 1 USDC bucket exists so YT-routed yield (which can be small) can exit via the same anonymity-set path.
 5. **EIP-712 meta-transactions.** Every confidential entry point has a `relayed*` variant; `_fromExternalAs` rebinds the Nox proof to the actor so a relayer can submit on behalf of the signer.
+6. **Aave float buffer.** The yield adapter parks USDC in a float and only batches deposits/withdrawals to Aave via a permissionless `rebalance()`. Aave `Supply`/`Withdraw` events are no longer 1:1 with user mints/redeems.
+7. **Anonymized redeem requests.** `RedeemRequest` storage holds a `keccak256(recipient, salt)` commit and an encrypted amount handle — no recipient address, no cleartext amount. `settleSYRedeem` requires the salt+recipient (kept off-chain) and is gated by a 5-minute `REDEEM_MIN_DELAY` to break tx-timing correlation.
+8. **Encrypted YT yield distribution.** `redeemYTToSY` mints encrypted SY equal to the user's pro-rata yield share without any public decryption. Yield exits blend with principal exits in the bucket anonymity set.
 
 ### Known limits
 
-- `requestSYRedeem` / `mintSY` reveal the cleartext denomination by design.
-- Aave deposit / withdraw events leak USDC flows in/out of the adapter.
-- YT yield redemption pays out cleartext USDC: the per-user payout = `userYT × yieldUsdc / userTotalYT`. Once `yieldUsdc` is public and a user redeems, observers learn that user's share of `userTotalYT` (still divided by an encrypted denominator if no other user has redeemed). Acceptable for a prototype, documented.
-- The redeem-request mappings (`redeemRequests`, `ytRedeemRequests`) expose `(user, clearUsdc)` between request and settle. Same plaintext leak as the payout itself.
+- The cleartext-USDC bridge boundary is fundamental: bucket sizes leak by design, and aggregate USDC in/out of the adapter address remains public. Per-user linkage to Aave is broken; per-bucket counts are not.
+- `settleSYRedeem` publicly decrypts the burned SY amount (so the contract knows how much USDC to release). The amount is therefore visible in the adapter's USDC ERC-20 transfer, just not before settle and not paired with the original requester address (recipient is supplied at settle time).
 - Nox itself sees who decrypts what handles — privacy depends on the iExec Nox network's TEE attestation model.
 - Per-action gas cost still varies by path. Timing/gas analysis can fingerprint action types even with uniform events. Padding to equalise needs measurement against the deployed Nox precompile and is left as future work.
 - The relay UI signs and submits with the same wallet by default. Full meta-tx privacy benefit requires a separate relayer wallet.
