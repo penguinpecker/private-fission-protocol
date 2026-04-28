@@ -1,6 +1,6 @@
 # Private Fission Protocol
 
-Prototype frontend for Private Fission Protocol, a confidential Pendle-style yield market.
+A confidential Pendle-style yield market on Arbitrum Sepolia. Users deposit USDC into Aave, mint encrypted SY, split it into encrypted PT (principal) and YT (yield), trade through a confidential AMM with Uniswap-V2 fees plus encrypted slippage, and redeem at maturity — all with balances, fills, swap amounts, and LP shares stored as Nox handles on-chain.
 
 ## Run Locally
 
@@ -14,84 +14,95 @@ Open `http://127.0.0.1:3000/`.
 ## Product Flow
 
 - Public homepage explains confidential SY/PT/YT markets.
-- Connect unlocks the app sidebar and available markets.
+- Connect unlocks the sidebar; market owner sees an extra Admin tab.
 - Aave USDC 30D market shows PT, YT, and PT + YT strategies.
-- Strategy pages include charts and buy/sell actions through the confidential AMM.
-- USDC redemption is a two-step async flow (burn SY, then settle once Nox attests).
-- Post-maturity, PT redeems 1:1 for confidential SY.
+- Strategy pages: encrypted swap ticket with slippage, LP add/remove, post-maturity redemption (PT 1:1, YT pro-rata yield, SY → USDC).
+- Wrong-network banner with one-click switch to Arbitrum Sepolia.
+- All entry points have an EIP-712 relayed variant (toggle in the privacy modal).
 
-## Contracts
+## Contracts (`contracts/`)
 
-The contract prototype is under `contracts/`.
+- **`FissionMarket.sol`** — main entry point. Wraps every confidential action (`mintSY`, `fission`, `combine`, `redeemPT`, `requestSYRedeem`/`settleSYRedeem`, `redeemYT`/`settleYTRedeem`, the four AMM routes, `addLiquiditySYPT`/`removeLiquiditySYPT`, `addLiquiditySYYT`/`removeLiquiditySYYT`) with an EIP-712 relayed variant. Constructor takes a `MarketConfig` struct so the same code can target different yield sources / underlyings.
+- **`FissionPositionVault.sol`** — single confidential vault holding SY, PT, YT, LP-SY-PT, LP-SY-YT under one address. Custom `_update` suppresses the standard ERC-7984 `ConfidentialTransfer` event for privacy.
+- **`AaveUSDCYieldAdapter.sol`** — generic Aave V3 single-asset adapter. Constructor takes `(market, usdc, aUsdc, pool)` so the addresses aren't hardcoded.
+- **`FissionMarketFactory.sol`** — owner-only registry of deployed markets. The market's full creation bytecode exceeds 24KB so the factory is a registry, not a deployer.
+- **`FissionAddresses.sol`** — pinned Nox + Arbitrum Sepolia constants used by the deploy script.
 
-- `FissionMarket.sol`: SY mint, SY/USDC two-step redeem, fission/combine, post-maturity PT redeem, owner-only encrypted AMM liquidity top-ups, EIP-712 meta-tx variants of every confidential action, and confidential AMM swaps with a 30 bps fee plus encrypted slippage guard.
-- `FissionPositionVault.sol`: single confidential vault holding SY, PT, and YT under one contract address; the standard ERC-7984 `ConfidentialTransfer` event is intentionally suppressed.
-- `AaveUSDCYieldAdapter.sol`: connects the market reserve to Aave V3 USDC on Arbitrum Sepolia.
-- `FissionAddresses.sol`: pinned Nox and Aave Arbitrum Sepolia addresses.
-
-Compile contracts:
+Compile:
 
 ```bash
 npm run compile
 ```
 
-Deployment uses `.env` values copied from `.env.example`. `.env`, build artifacts, caches, broadcasts, and generated deployment files are ignored by git.
+## Deployment
 
-Deploy and top up confidential AMM reserves:
+`.env` values are copied from `.env.example`. `.env`, build artifacts, caches, broadcasts, and generated deployment files are ignored by git.
 
 ```bash
-npm run deploy:arbitrum-sepolia
-npm run add:amm-liquidity -- sy 250000
-npm run add:amm-liquidity -- pt 250000
-npm run add:amm-liquidity -- yt 1000000
+npm run deploy:arbitrum-sepolia          # Deploys market + vault + adapter + factory; registers market.
+npm run verify:arbitrum-sepolia          # Verifies all four on Arbiscan.
+npm run add:amm-liquidity -- sy 250000   # Owner-only AMM top-up (encrypted).
 ```
 
-Users need Arbitrum Sepolia USDC in their wallet before minting SY, because `mintSY` transfers real USDC into the Aave-backed adapter before confidential SY is minted.
+Users need Arbitrum Sepolia USDC in their wallet before minting SY: `mintSY` transfers real USDC into the Aave-backed adapter before confidential SY is minted.
+
+## Confidential AMM
+
+- Uniswap V2 constant-product on encrypted reserves.
+- 30 bps fee retained in reserves; LP shares accrue swap fees implicitly.
+- Caller passes `encryptedMinAmountOut`. Below the minimum: zero out, input refunded — both branches are encrypted no-ops so observers cannot tell which path ran.
+- Two pools: SY/PT and SY/YT, each with its own LP token (kinds 3 and 4 in the vault).
+- Initial LP supply equal to SY seed amount, locked to the market — captures seed-time backing while diluting correctly on new deposits.
+- `addLiquiditySYPT` / `addLiquiditySYYT` accept any ratio: contract mints LP proportional to the limiting side and refunds the over-supplied side.
 
 ## Maturity & Redemption
 
-- `mintSY`, `fission`, and all `swap*`/`sell*` routes revert after `maturity`.
-- `combine` (PT + YT → SY) stays open.
-- `redeemPT(externalEuint256, bytes)` opens at `block.timestamp >= maturity` and burns encrypted PT 1:1 for SY.
-- `requestSYRedeem(uint256 clearUsdc)` burns the equivalent encrypted SY and stakes a `Nox.eq(transferred, requested)` handle for public attestation.
-- `settleSYRedeem(uint256 id, bytes proof)` validates the Nox attestation; on success it withdraws `clearUsdc` USDC from Aave to the user. The redeemed USDC amount is intentionally public — converting back to a public asset reveals exit size.
-
-## AMM Math
-
-- Uniswap V2 constant product on encrypted reserves.
-- 30 bps fee retained in the reserve as accrued LP yield.
-- Caller passes `encryptedMinAmountOut`. If the encrypted fill falls below the minimum, the swap pays zero out and refunds the input — both branches are encrypted no-ops so on-chain observers cannot tell which path ran.
-- AMM reserves are seeded by the constructor and topped up by `addAmmLiquidity` (owner-only, mints fresh confidential tokens). This is a prototype incentive model — there is no LP token and no externally-funded liquidity.
+- Pre-maturity, `notMatured`-gated entry points: `mintSY`, `fission`, all four swap routes, `addLiquidity*`, `removeLiquidity*`.
+- `combine` (PT + YT → SY) stays open both pre- and post-maturity.
+- **PT redemption** (post-maturity): `redeemPT(handle, proof)` burns encrypted PT 1:1 for SY.
+- **SY → USDC redemption** (any time): two-step. `requestSYRedeem(clearUsdc)` burns the equivalent encrypted SY and stakes a `Nox.eq(transferred, requested)` handle for public decryption. `settleSYRedeem(id, proof)` validates the proof, decrements `principalDeposited`, and withdraws cleartext USDC from Aave to the user.
+- **YT yield claim** (post-maturity, post-snapshot): `snapshotMaturity()` locks `maturityYieldUsdc = aaveBalance - principalDeposited` and the encrypted user-held YT supply. `redeemYT(handle, proof)` burns user's YT and stakes their pro-rata yield handle (`burned × yieldUsdc / userTotalYT`) for public decryption. `settleYTRedeem(id, proof)` decrypts and pays out the cleartext USDC slice.
+- Yield buffer guard: `harvestAaveYield` reserves `principalDeposited + (maturityYieldUsdc - yieldDistributed)` so an admin sweep cannot dip into either user principal or unclaimed YT yield.
 
 ## Privacy Layers
 
-Layered defenses stack on top of each other; later layers assume the earlier ones are in place.
+1. **Uniform action events.** Fission, combine, redeemPT, all four AMM routes, LP add/remove emit a single event signature with two opaque handles and no indexed topics. The standard ERC-7984 `ConfidentialTransfer` event is suppressed by the vault.
+2. **Single vault address.** SY, PT, YT, LP-SY-PT, LP-SY-YT all live in one contract — observers can't filter by leg via contract address.
+3. **Trimmed Nox ACL surface.** Internal allows are pruned to only what's strictly needed; the public allow-graph carries fewer "X can decrypt Y" entries per action.
+4. **Fixed-denomination entry/exit.** `mintSY` and `requestSYRedeem` accept only `{10, 100, 1000, 10000}` USDC, replacing the exact-amount fingerprint with a four-bucket anonymity set.
+5. **EIP-712 meta-transactions.** Every confidential entry point has a `relayed*` variant; `_fromExternalAs` rebinds the Nox proof to the actor so a relayer can submit on behalf of the signer.
 
-1. **Uniform action events.** `fission`, `combine`, `redeemPT`, and all four AMM swap routes emit a single `ConfidentialAction(handleA, handleB)` event with no indexed topics. Observers cannot filter by user or route. The `from`/`to`/`amount`-indexed `ConfidentialTransfer` event of the underlying ERC-7984 tokens is suppressed entirely by the vault's custom `_update`, so per-leg activity logs no longer leak who moved what.
-2. **Trimmed Nox ACL surface.** Each ERC-7984 mint/burn/transfer relies only on the allows that `_update` already grants. No redundant `Nox.allow` / `allowThis` calls are made — the public ACL graph carries fewer "X can decrypt Y" entries.
-3. **Fixed-denomination entry/exit.** `mintSY` and `requestSYRedeem` accept only `{10, 100, 1000, 10000}` USDC. The cleartext-amount fingerprint that survives the encrypted balance system is replaced by a four-bucket anonymity set.
-4. **EIP-712 meta-transactions.** Every confidential action and the redeem request also exposes a `relayed*` variant. The signer authorises off-chain; any third party submits the tx. `msg.sender` becomes the relayer, and the proof binding is rewritten to validate against the actor's address (`_fromExternalAs`) so the encrypted handle is consumable from a different submitter. Combined with layer (1), the on-chain trace no longer carries a per-user activity signal.
+### Known limits
 
-Limits:
 - `requestSYRedeem` / `mintSY` reveal the cleartext denomination by design.
-- The Aave deposit/withdraw side leaks USDC flows in/out of the adapter.
+- Aave deposit / withdraw events leak USDC flows in/out of the adapter.
+- YT yield redemption pays out cleartext USDC: the per-user payout = `userYT × yieldUsdc / userTotalYT`. Once `yieldUsdc` is public and a user redeems, observers learn that user's share of `userTotalYT` (still divided by an encrypted denominator if no other user has redeemed). Acceptable for a prototype, documented.
+- The redeem-request mappings (`redeemRequests`, `ytRedeemRequests`) expose `(user, clearUsdc)` between request and settle. Same plaintext leak as the payout itself.
 - Nox itself sees who decrypts what handles — privacy depends on the iExec Nox network's TEE attestation model.
-- Per-action gas cost still varies by path (e.g. swap is heavier than fission). On-chain timing/gas analysis can fingerprint action types even with uniform events. Padding to equalise needs measurement against the deployed Nox precompile and is left as future work.
+- Per-action gas cost still varies by path. Timing/gas analysis can fingerprint action types even with uniform events. Padding to equalise needs measurement against the deployed Nox precompile and is left as future work.
+- The relay UI signs and submits with the same wallet by default. Full meta-tx privacy benefit requires a separate relayer wallet.
 
-## Frontend API Bindings
+## Tests
 
-Frontend contract bindings live in `src/lib/`.
+```bash
+npx hardhat test test/FissionMarket.test.js
+```
 
-- `addresses.js`: network, Aave, Nox, and Fission contract addresses.
-- `abis.js`: minimal frontend ABI surface.
-- `fissionApi.js`: wallet, Nox encryption, mint, fission, AMM swap, redeem, and confidential balance helpers, plus EIP-712 sign/submit helpers (`signRelayed*`, `submitRelayed*`) for relayed actions.
+Covers access control, denominations, maturity gates, EIP-712 happy/replay/wrong-actor paths, redeem state machine, yield buffer guards, snapshot bookkeeping, multi-market registry, LP add/remove gating. The test rig installs mock NoxCompute / Aave / USDC contracts at the pinned addresses via `hardhat_setCode` so contract logic runs end-to-end on a local EDR network without the real precompile.
+
+## Frontend (`src/`)
+
+- **`addresses.js`** — chain + contract addresses.
+- **`abis.js`** — minimal ABI surface for the market, vault, factory, and ERC-20.
+- **`fissionApi.js`** — wallet/clients, Nox encryption, all read/write helpers, EIP-712 `signRelayed*` / `submitRelayed*` pairs, admin helpers (`adminAddAmmLiquidity`, `adminHarvestAaveYield`).
+- **`main.js`** — single-file vanilla Vite app. Modal-driven flows; admin sidebar tab unlocks for `market.owner()`.
 
 ## Etherscan verification
 
-After `npm run deploy:arbitrum-sepolia` finishes, populate `ETHERSCAN_API_KEY` in `.env` and run:
+After deploy, populate `ETHERSCAN_API_KEY` in `.env` and run:
 
 ```bash
 npm run verify:arbitrum-sepolia
 ```
 
-The script hits the Etherscan v2 unified API (`chainid=421614`) and verifies the Market, the FissionPositionVault, and the Aave adapter using the standard JSON input from `artifacts/build-info`.
+Hits the Etherscan v2 unified API (`chainid=421614`) and verifies the Market, the FissionPositionVault, the Aave adapter, and the FissionMarketFactory using the standard JSON input from `artifacts/build-info`.
