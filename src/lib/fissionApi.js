@@ -256,6 +256,45 @@ export async function readMaturityYieldStatus() {
   return { taken, total, distributed };
 }
 
+export async function readMarketOwner() {
+  const { publicClient } = createClients();
+  const market = getContract({
+    address: FISSION_ADDRESSES.market,
+    abi: fissionMarketAbi,
+    client: publicClient
+  });
+  return market.read.owner();
+}
+
+export async function readPrincipalDeposited() {
+  const { publicClient } = createClients();
+  const market = getContract({
+    address: FISSION_ADDRESSES.market,
+    abi: fissionMarketAbi,
+    client: publicClient
+  });
+  return market.read.principalDeposited();
+}
+
+const VAULT_KIND_NUM = { sy: 0, pt: 1, yt: 2 };
+
+export async function adminAddAmmLiquidity(reserveName, amount) {
+  const reserve = VAULT_KIND_NUM[reserveName];
+  if (reserve === undefined) throw new Error(`Unknown reserve: ${reserveName}`);
+  const { walletClient } = createClients();
+  const [account] = await walletClient.getAddresses();
+  const { handle, handleProof } = await encryptAmount(amount);
+  const market = getMarketContract(walletClient);
+  return market.write.addAmmLiquidity([reserve, handle, handleProof], { account });
+}
+
+export async function adminHarvestAaveYield(toAddress, amountUsdc) {
+  const { walletClient } = createClients();
+  const [account] = await walletClient.getAddresses();
+  const market = getMarketContract(walletClient);
+  return market.write.harvestAaveYield([toAddress, parseUnits(cleanAmount(amountUsdc), 6)], { account });
+}
+
 export async function snapshotMaturity() {
   const { walletClient } = createClients();
   const [account] = await walletClient.getAddresses();

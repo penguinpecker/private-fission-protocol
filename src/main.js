@@ -1,5 +1,7 @@
 import './styles.css';
 import {
+  adminAddAmmLiquidity,
+  adminHarvestAaveYield,
   approveUSDC,
   combinePTAndYT,
   connectWallet as connectWalletOnchain,
@@ -8,8 +10,10 @@ import {
   listPendingRedeemsForAccount,
   listPendingYTRedeemsForAccount,
   mintSY,
+  readMarketOwner,
   readMaturity,
   readMaturityYieldStatus,
+  readPrincipalDeposited,
   readUSDCAllowance,
   redeemPT,
   redeemYT,
@@ -93,7 +97,12 @@ const state = {
   pendingYTRedeems: [],
   yieldStatus: null,
   redeemYtAmount: '10',
-  hasUsdcApproval: false
+  hasUsdcApproval: false,
+  isAdmin: false,
+  adminAmmReserve: 'sy',
+  adminAmmAmount: '250000',
+  adminHarvestAmount: '0',
+  principalDeposited: 0n
 };
 
 const markets = [
@@ -125,6 +134,8 @@ const navItems = [
   { id: 'strategy', label: 'Strategy', icon: '◇' },
   { id: 'portfolio', label: 'Portfolio', icon: '◐' }
 ];
+
+const adminNavItem = { id: 'admin', label: 'Admin', icon: '◆' };
 
 const app = document.querySelector('#app');
 
@@ -193,6 +204,14 @@ function refreshPostConnectState() {
   }).catch(() => {});
   readMaturityYieldStatus().then((status) => {
     state.yieldStatus = status;
+    render();
+  }).catch(() => {});
+  readMarketOwner().then((ownerAddr) => {
+    state.isAdmin = ownerAddr.toLowerCase() === state.account.toLowerCase();
+    render();
+  }).catch(() => {});
+  readPrincipalDeposited().then((p) => {
+    state.principalDeposited = p;
     render();
   }).catch(() => {});
 }
@@ -296,7 +315,7 @@ function shell(content) {
           </div>
         </div>
         <nav class="nav">
-          ${navItems.map((item) => `
+          ${(state.isAdmin ? [...navItems, adminNavItem] : navItems).map((item) => `
             <button class="nav-item ${active === item.id ? 'active' : ''}" data-screen="${item.id}">
               <span>${item.icon}</span>
               <b>${item.label}</b>
@@ -337,6 +356,7 @@ function pageTitle() {
   if (state.screen === 'home') return 'Fission Protocol';
   if (state.screen === 'markets') return 'Available Markets';
   if (state.screen === 'strategy') return strategies[state.strategy].name;
+  if (state.screen === 'admin') return 'Admin Console';
   return 'Encrypted Portfolio';
 }
 
@@ -539,6 +559,119 @@ function screenStrategy() {
   `;
 }
 
+function screenAdmin() {
+  if (!state.isAdmin) {
+    return `
+      <section class="portfolio-grid">
+        <div class="panel balance-panel">
+          <p class="eyebrow">Admin only</p>
+          <h3>Connected wallet is not the market owner</h3>
+          <p>Switch to the deployer wallet to access admin controls.</p>
+        </div>
+      </section>
+    `;
+  }
+
+  const yield_ = state.yieldStatus;
+  const usdcDecimals = 6;
+  const formatUsdc = (raw) => {
+    const v = BigInt(raw || 0);
+    const whole = v / 10n ** BigInt(usdcDecimals);
+    const frac = v % 10n ** BigInt(usdcDecimals);
+    return `${whole.toLocaleString()}.${frac.toString().padStart(usdcDecimals, '0').slice(0, 2)}`;
+  };
+
+  const yieldRemaining = yield_ && yield_.taken
+    ? BigInt(yield_.total) - BigInt(yield_.distributed)
+    : 0n;
+
+  return `
+    <section class="portfolio-grid">
+      <div class="panel balance-panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Aave-side accounting</p>
+            <h3>Principal vs. yield</h3>
+          </div>
+        </div>
+        <div class="position-list">
+          <div class="position-row">
+            <div><b>Principal deposited</b><small>USDC supplied via mintSY, net of redemptions</small></div>
+            <strong>${formatUsdc(state.principalDeposited)}</strong>
+            <span>USDC</span>
+          </div>
+          <div class="position-row">
+            <div><b>Snapshot taken</b><small>${yield_?.taken ? 'Yes' : 'Not yet — call snapshotMaturity post-maturity'}</small></div>
+            <strong>${yield_?.taken ? 'YES' : 'NO'}</strong>
+            <span>—</span>
+          </div>
+          <div class="position-row">
+            <div><b>Snapshotted yield</b><small>Total user yield at maturity</small></div>
+            <strong>${yield_?.taken ? formatUsdc(yield_.total) : '—'}</strong>
+            <span>USDC</span>
+          </div>
+          <div class="position-row">
+            <div><b>Yield distributed</b><small>Sum of settleYTRedeem payouts</small></div>
+            <strong>${yield_?.taken ? formatUsdc(yield_.distributed) : '—'}</strong>
+            <span>USDC</span>
+          </div>
+          <div class="position-row">
+            <div><b>Yield remaining (reserved)</b><small>Locked for outstanding YT claims</small></div>
+            <strong>${yield_?.taken ? formatUsdc(yieldRemaining) : '—'}</strong>
+            <span>USDC</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel exposure-panel">
+        <p class="eyebrow">Encrypted AMM liquidity top-up</p>
+        <h3>addAmmLiquidity</h3>
+        <p>Mint encrypted SY/PT/YT to the AMM reserve. Owner-only. Caller's input is encrypted before submission.</p>
+        <div class="segmented compact">
+          ${['sy', 'pt', 'yt'].map((r) => `
+            <button class="${state.adminAmmReserve === r ? 'active' : ''}" data-admin-reserve="${r}">${r.toUpperCase()}</button>
+          `).join('')}
+        </div>
+        ${amountInput('Amount (1e18-scale)', state.adminAmmAmount, state.adminAmmReserve.toUpperCase(), 'adminAmmAmount')}
+        <button class="primary full" data-modal-action="admin-add-liquidity">Submit AMM top-up</button>
+        ${state.txStatus ? `<div class="tx-status">${state.txStatus}</div>` : ''}
+      </div>
+
+      <div class="panel exposure-panel">
+        <p class="eyebrow">Aave yield harvest</p>
+        <h3>harvestAaveYield</h3>
+        <p>Sweep USDC out of the Aave-side surplus. Bounded so it cannot dip into user principal or unclaimed YT yield.</p>
+        ${amountInput('USDC to harvest', state.adminHarvestAmount, 'USDC', 'adminHarvestAmount')}
+        <button class="primary full" data-modal-action="admin-harvest">Harvest yield</button>
+      </div>
+
+      <div class="panel">
+        <p class="eyebrow">Pending redemptions</p>
+        <h3>SY (${state.pendingRedeems.length}) · YT (${state.pendingYTRedeems.length})</h3>
+        ${state.pendingRedeems.length === 0 && state.pendingYTRedeems.length === 0
+          ? '<p>No open redemption tickets for this account.</p>'
+          : `<div class="position-list">
+              ${state.pendingRedeems.map((r) => `
+                <div class="position-row">
+                  <div><b>SY redemption</b><small>id ${r.id}</small></div>
+                  <strong>${formatUsdc(BigInt(r.clearUsdc) * 1n)}</strong>
+                  <span>USDC</span>
+                </div>
+              `).join('')}
+              ${state.pendingYTRedeems.map((r) => `
+                <div class="position-row">
+                  <div><b>YT redemption</b><small>id ${r.id}</small></div>
+                  <strong>encrypted</strong>
+                  <span>—</span>
+                </div>
+              `).join('')}
+            </div>`
+        }
+      </div>
+    </section>
+  `;
+}
+
 function renderYTRedeemControls() {
   const status = state.yieldStatus;
   if (!status) return '';
@@ -703,7 +836,9 @@ function render() {
       ? screenMarkets()
       : state.screen === 'strategy'
         ? screenStrategy()
-        : screenPortfolio();
+        : state.screen === 'admin'
+          ? screenAdmin()
+          : screenPortfolio();
 
   app.innerHTML = shell(content);
 
@@ -732,11 +867,24 @@ function render() {
       if (el.dataset.modalAction === 'snapshot-maturity') {
         await runSnapshotMaturity();
       }
+      if (el.dataset.modalAction === 'admin-add-liquidity') {
+        await runAdminAddAmmLiquidity();
+      }
+      if (el.dataset.modalAction === 'admin-harvest') {
+        await runAdminHarvest();
+      }
       if (el.dataset.modalAction === 'toggle-relay') {
         state.useRelay = !state.useRelay;
         toast(`Relay mode ${state.useRelay ? 'ON' : 'OFF'}`);
         render();
       }
+    });
+  });
+  document.querySelectorAll('[data-admin-reserve]').forEach((el) => {
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      state.adminAmmReserve = el.dataset.adminReserve;
+      render();
     });
   });
   document.querySelectorAll('[data-strategy]').forEach((el) => {
@@ -874,6 +1022,37 @@ async function settlePendingYTRedeem() {
     readMaturityYieldStatus().then((s) => { state.yieldStatus = s; render(); }).catch(() => {});
   } catch (error) {
     state.txStatus = error.shortMessage || error.message || 'Settle failed';
+    render();
+  }
+}
+
+async function runAdminAddAmmLiquidity() {
+  if (!state.isAdmin) return;
+  try {
+    state.txStatus = `Encrypting ${state.adminAmmAmount} ${state.adminAmmReserve.toUpperCase()} and topping up reserve...`;
+    render();
+    const txHash = await adminAddAmmLiquidity(state.adminAmmReserve, state.adminAmmAmount);
+    state.txStatus = '';
+    toast(`AMM liquidity added: ${shortHash(txHash)}`);
+    render();
+  } catch (error) {
+    state.txStatus = error.shortMessage || error.message || 'AMM top-up failed';
+    render();
+  }
+}
+
+async function runAdminHarvest() {
+  if (!state.isAdmin) return;
+  try {
+    state.txStatus = `Harvesting ${state.adminHarvestAmount} USDC of yield...`;
+    render();
+    const txHash = await adminHarvestAaveYield(state.account, state.adminHarvestAmount);
+    state.txStatus = '';
+    toast(`Yield harvested: ${shortHash(txHash)}`);
+    readMaturityYieldStatus().then((s) => { state.yieldStatus = s; render(); }).catch(() => {});
+    readPrincipalDeposited().then((p) => { state.principalDeposited = p; render(); }).catch(() => {});
+  } catch (error) {
+    state.txStatus = error.shortMessage || error.message || 'Harvest failed';
     render();
   }
 }
