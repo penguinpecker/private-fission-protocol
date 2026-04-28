@@ -104,7 +104,37 @@ export async function readMaturity() {
   return market.read.maturity();
 }
 
-export async function approveUSDC(amount) {
+/**
+ * Walk every redeem request slot and collect the open ones that belong to `account`. Used to
+ * restore in-flight 2-step redemptions across page refreshes — `state.pendingRedeem` was
+ * in-memory only.
+ */
+export async function listPendingRedeemsForAccount(account) {
+  const { publicClient } = createClients();
+  const market = getContract({
+    address: FISSION_ADDRESSES.market,
+    abi: fissionMarketAbi,
+    client: publicClient
+  });
+  const total = await market.read.nextRedeemId();
+  const open = [];
+  for (let i = 1n; i <= total; i++) {
+    const r = await market.read.redeemRequests([i]);
+    const [user, clearUsdc, eqHandle, settled] = r;
+    if (settled) continue;
+    if (user.toLowerCase() !== account.toLowerCase()) continue;
+    open.push({ id: i, clearUsdc, eqHandle });
+  }
+  return open;
+}
+
+const MAX_UINT256 = (1n << 256n) - 1n;
+
+/**
+ * Approve once for the maximum amount; the frontend stops asking for fresh approvals on every
+ * mint. The user can still call the underlying ERC-20 to revoke.
+ */
+export async function approveUSDC() {
   const { walletClient } = createClients();
   const [account] = await walletClient.getAddresses();
   const usdc = getContract({
@@ -112,8 +142,17 @@ export async function approveUSDC(amount) {
     abi: erc20Abi,
     client: walletClient
   });
+  return usdc.write.approve([FISSION_ADDRESSES.adapter, MAX_UINT256], { account });
+}
 
-  return usdc.write.approve([FISSION_ADDRESSES.adapter, parseUnits(cleanAmount(amount), 6)], { account });
+export async function readUSDCAllowance(owner) {
+  const { publicClient } = createClients();
+  const usdc = getContract({
+    address: EXTERNAL_ADDRESSES.usdc,
+    abi: erc20Abi,
+    client: publicClient
+  });
+  return usdc.read.allowance([owner, FISSION_ADDRESSES.adapter]);
 }
 
 export async function mintSY(amount) {
