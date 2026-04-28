@@ -3,6 +3,8 @@ import {
   addLiquiditySYPT,
   addLiquiditySYYT,
   adminAddAmmLiquidity,
+  isUninitializedHandle,
+  readKindBalanceHandle,
   adminHarvestAaveYield,
   approveUSDC,
   combinePTAndYT,
@@ -105,6 +107,7 @@ const state = {
   yieldStatus: null,
   redeemYtAmount: '10',
   hasUsdcApproval: false,
+  initialised: { sy: false, pt: false, yt: false, lpSyPt: false, lpSyYt: false },
   isAdmin: false,
   adminAmmReserve: 'sy',
   adminAmmAmount: '250000',
@@ -243,6 +246,28 @@ function refreshPostConnectState() {
     state.principalDeposited = p;
     render();
   }).catch(() => {});
+  refreshBalanceHandles();
+}
+
+async function refreshBalanceHandles() {
+  if (!state.account) return;
+  try {
+    const [sy, pt, yt, lpSyPt, lpSyYt] = await Promise.all([
+      readKindBalanceHandle(0, state.account),
+      readKindBalanceHandle(1, state.account),
+      readKindBalanceHandle(2, state.account),
+      readKindBalanceHandle(3, state.account),
+      readKindBalanceHandle(4, state.account)
+    ]);
+    state.initialised = {
+      sy: !isUninitializedHandle(sy),
+      pt: !isUninitializedHandle(pt),
+      yt: !isUninitializedHandle(yt),
+      lpSyPt: !isUninitializedHandle(lpSyPt),
+      lpSyYt: !isUninitializedHandle(lpSyYt)
+    };
+    render();
+  } catch {}
 }
 
 let walletListenersAttached = false;
@@ -504,6 +529,9 @@ function screenStrategy() {
   const actions = state.strategy === 'pair' ? ['buy', 'sell'] : ['buy', 'sell'];
   if (!actions.includes(state.action)) state.action = 'buy';
   const actionDisabled = isMatured() && state.strategy !== 'pt';
+  const inputKind = swapInputKind();
+  const noInputBalance = state.account && inputKind && !isInputKindReady(inputKind);
+  const inputKindLabel = inputKind === 'pt+yt' ? 'PT and YT' : inputTokenFor(item);
   return `
     <section class="strategy-detail">
       <div class="detail-hero">
@@ -562,8 +590,14 @@ function screenStrategy() {
             </div>
           </div>
           ${state.strategy !== 'pair' ? amountInput('Min output (slippage guard, encrypted)', state.minOut, outputTokenFor(item), 'minOut') : ''}
-          <button class="primary full" ${actionDisabled ? 'disabled' : 'data-modal="trade"'}>
-            ${actionDisabled ? 'Market matured · use redeem' : `${state.action} with confidential AMM`}
+          ${noInputBalance ? `
+            <div class="privacy-note" style="background:#3a1818;border-color:#a02828;color:#ffb0b0">
+              <b>No ${inputKindLabel} balance yet</b>
+              <span>${inputKind === 'sy' ? 'Mint SY first via the Markets screen.' : inputKind === 'pt+yt' ? 'Fission SY into PT+YT first (PT strategy → buy with SY).' : `Buy ${item.token} first or fission SY for it.`}</span>
+            </div>
+          ` : ''}
+          <button class="primary full" ${actionDisabled || noInputBalance ? 'disabled' : 'data-modal="trade"'}>
+            ${actionDisabled ? 'Market matured · use redeem' : noInputBalance ? `Need ${inputKindLabel} first` : `${state.action} with confidential AMM`}
           </button>
           ${isMatured() && state.strategy === 'pt' ? '<button class="secondary full" data-modal="redeem-pt">Redeem PT 1:1 for SY</button>' : ''}
           ${isMatured() && state.strategy === 'yt' ? renderYTRedeemControls() : ''}
@@ -742,6 +776,24 @@ function inputTokenFor(item) {
   if (state.action === 'buy') return 'SY-USDC';
   if (state.action === 'sell') return item.token;
   return item.token === 'PT + YT' ? 'PT-USDC' : item.token;
+}
+
+/**
+ * Map (strategy, action) to the vault-kind name(s) the user spends on the input side. The trade
+ * button is gated when any required kind is uninitialised (would revert with ZeroBalance).
+ */
+function swapInputKind() {
+  if (state.strategy === 'pair' && state.action === 'sell') return 'pt+yt';
+  if (state.action === 'buy') return 'sy';
+  if (state.strategy === 'pt') return 'pt';
+  if (state.strategy === 'yt') return 'yt';
+  if (state.strategy === 'pair') return 'sy';
+  return null;
+}
+
+function isInputKindReady(kind) {
+  if (kind === 'pt+yt') return state.initialised.pt && state.initialised.yt;
+  return state.initialised[kind];
 }
 
 function outputTokenFor(item) {
