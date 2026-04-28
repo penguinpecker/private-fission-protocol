@@ -117,6 +117,30 @@ export async function readChainId() {
   return parseInt(hex, 16);
 }
 
+/**
+ * Build EIP-1559 gas overrides anchored on the current base fee.
+ *
+ * Why: MetaMask's auto-estimator sometimes submits with `maxFeePerGas` slightly *below* the
+ * latest block's base fee on Arbitrum Sepolia (low-traffic network with rapid base-fee jitter),
+ * which RPCs reject with "max fee per gas less than block base fee". Setting the overrides
+ * explicitly with a 2× base-fee headroom + 0.1 gwei priority skips MetaMask's estimator and
+ * avoids the race.
+ */
+async function gasOverrides() {
+  const { publicClient } = createClients();
+  const block = await publicClient.getBlock({ blockTag: 'latest' });
+  const baseFee = block.baseFeePerGas ?? 100_000_000n;
+  const priority = 100_000_000n; // 0.1 gwei
+  return {
+    maxPriorityFeePerGas: priority,
+    maxFeePerGas: baseFee * 2n + priority
+  };
+}
+
+async function writeOpts(account) {
+  return { account, ...(await gasOverrides()) };
+}
+
 export const EXPECTED_CHAIN_ID = 421614;
 
 export async function switchToArbitrumSepolia() {
@@ -267,7 +291,7 @@ export async function approveUSDC() {
     abi: erc20Abi,
     client: walletClient
   });
-  return usdc.write.approve([FISSION_ADDRESSES.adapter, MAX_UINT256], { account });
+  return usdc.write.approve([FISSION_ADDRESSES.adapter, MAX_UINT256], { account, ...(await gasOverrides()) });
 }
 
 export async function readUSDCAllowance(owner) {
@@ -284,7 +308,7 @@ export async function mintSY(amount) {
   const { walletClient } = createClients();
   const [account] = await walletClient.getAddresses();
   const market = getMarketContract(walletClient);
-  return market.write.mintSY([parseUnits(cleanAmount(amount), 6)], { account });
+  return market.write.mintSY([parseUnits(cleanAmount(amount), 6)], { account, ...(await gasOverrides()) });
 }
 
 export async function encryptAmount(amount, applicationContract = FISSION_ADDRESSES.market) {
@@ -298,7 +322,7 @@ export async function fissionSY(amount) {
   const [account] = await walletClient.getAddresses();
   const { handle, handleProof } = await encryptAmount(amount);
   const market = getMarketContract(walletClient);
-  return market.write.fission([handle, handleProof], { account });
+  return market.write.fission([handle, handleProof], { account, ...(await gasOverrides()) });
 }
 
 export async function combinePTAndYT(amount) {
@@ -306,7 +330,7 @@ export async function combinePTAndYT(amount) {
   const [account] = await walletClient.getAddresses();
   const { handle, handleProof } = await encryptAmount(amount);
   const market = getMarketContract(walletClient);
-  return market.write.combine([handle, handleProof], { account });
+  return market.write.combine([handle, handleProof], { account, ...(await gasOverrides()) });
 }
 
 export async function redeemPT(amount) {
@@ -314,7 +338,7 @@ export async function redeemPT(amount) {
   const [account] = await walletClient.getAddresses();
   const { handle, handleProof } = await encryptAmount(amount);
   const market = getMarketContract(walletClient);
-  return market.write.redeemPT([handle, handleProof], { account });
+  return market.write.redeemPT([handle, handleProof], { account, ...(await gasOverrides()) });
 }
 
 /**
@@ -364,7 +388,7 @@ export async function settleSYRedeem({ id, amountHandle, salt, recipient }) {
   const handleClient = await createViemHandleClient(walletClient);
   const { decryptionProof } = await handleClient.publicDecrypt(amountHandle);
   const market = getMarketContract(walletClient);
-  const txHash = await market.write.settleSYRedeem([id, recipient, salt, decryptionProof], { account });
+  const txHash = await market.write.settleSYRedeem([id, recipient, salt, decryptionProof], { account, ...(await gasOverrides()) });
   removePending(account, id);
   return txHash;
 }
@@ -412,7 +436,7 @@ export async function adminAddAmmLiquidity(reserveName, amount) {
   const [account] = await walletClient.getAddresses();
   const { handle, handleProof } = await encryptAmount(amount);
   const market = getMarketContract(walletClient);
-  return market.write.addAmmLiquidity([reserve, handle, handleProof], { account });
+  return market.write.addAmmLiquidity([reserve, handle, handleProof], { account, ...(await gasOverrides()) });
 }
 
 export async function addLiquiditySYPT(syAmount, ptAmount) {
@@ -421,7 +445,7 @@ export async function addLiquiditySYPT(syAmount, ptAmount) {
   const sy = await encryptAmount(syAmount);
   const pt = await encryptAmount(ptAmount);
   const market = getMarketContract(walletClient);
-  return market.write.addLiquiditySYPT([sy.handle, sy.handleProof, pt.handle, pt.handleProof], { account });
+  return market.write.addLiquiditySYPT([sy.handle, sy.handleProof, pt.handle, pt.handleProof], { account, ...(await gasOverrides()) });
 }
 
 export async function removeLiquiditySYPT(lpAmount) {
@@ -429,7 +453,7 @@ export async function removeLiquiditySYPT(lpAmount) {
   const [account] = await walletClient.getAddresses();
   const lp = await encryptAmount(lpAmount);
   const market = getMarketContract(walletClient);
-  return market.write.removeLiquiditySYPT([lp.handle, lp.handleProof], { account });
+  return market.write.removeLiquiditySYPT([lp.handle, lp.handleProof], { account, ...(await gasOverrides()) });
 }
 
 export async function addLiquiditySYYT(syAmount, ytAmount) {
@@ -438,7 +462,7 @@ export async function addLiquiditySYYT(syAmount, ytAmount) {
   const sy = await encryptAmount(syAmount);
   const yt = await encryptAmount(ytAmount);
   const market = getMarketContract(walletClient);
-  return market.write.addLiquiditySYYT([sy.handle, sy.handleProof, yt.handle, yt.handleProof], { account });
+  return market.write.addLiquiditySYYT([sy.handle, sy.handleProof, yt.handle, yt.handleProof], { account, ...(await gasOverrides()) });
 }
 
 export async function removeLiquiditySYYT(lpAmount) {
@@ -446,7 +470,7 @@ export async function removeLiquiditySYYT(lpAmount) {
   const [account] = await walletClient.getAddresses();
   const lp = await encryptAmount(lpAmount);
   const market = getMarketContract(walletClient);
-  return market.write.removeLiquiditySYYT([lp.handle, lp.handleProof], { account });
+  return market.write.removeLiquiditySYYT([lp.handle, lp.handleProof], { account, ...(await gasOverrides()) });
 }
 
 export async function decryptLPSYPT(account) {
@@ -465,14 +489,14 @@ export async function adminHarvestAaveYield(toAddress, amountUsdc) {
   const { walletClient } = createClients();
   const [account] = await walletClient.getAddresses();
   const market = getMarketContract(walletClient);
-  return market.write.harvestAaveYield([toAddress, parseUnits(cleanAmount(amountUsdc), 6)], { account });
+  return market.write.harvestAaveYield([toAddress, parseUnits(cleanAmount(amountUsdc), 6)], { account, ...(await gasOverrides()) });
 }
 
 export async function snapshotMaturity() {
   const { walletClient } = createClients();
   const [account] = await walletClient.getAddresses();
   const market = getMarketContract(walletClient);
-  return market.write.snapshotMaturity({ account });
+  return market.write.snapshotMaturity({ account, ...(await gasOverrides()) });
 }
 
 /**
@@ -486,7 +510,7 @@ export async function redeemYTToSY(amount) {
   const [account] = await walletClient.getAddresses();
   const { handle, handleProof } = await encryptAmount(amount);
   const market = getMarketContract(walletClient);
-  return market.write.redeemYTToSY([handle, handleProof], { account });
+  return market.write.redeemYTToSY([handle, handleProof], { account, ...(await gasOverrides()) });
 }
 
 export async function swapWithAmm(route, amount, minAmountOut = '0') {
@@ -561,6 +585,10 @@ export async function decryptKindBalance(kind, account) {
     client: publicClient
   });
   const balanceHandle = await vault.read.confidentialBalanceOf([kind, account]);
+  // Uninitialised handle = user has never been credited this kind. The Nox handle library
+  // refuses to decrypt the all-zero handle (its embedded chainId is 0, doesn't match the
+  // connected chain), so short-circuit to a clean zero balance instead of throwing.
+  if (isUninitializedHandle(balanceHandle)) return 0n;
   const handleClient = await createViemHandleClient(walletClient);
   return handleClient.decrypt(balanceHandle);
 }
@@ -723,7 +751,7 @@ export async function submitRelayedRedeemYTToSY(intent) {
   const market = getMarketContract(walletClient);
   return market.write.relayedRedeemYTToSY(
     [intent.actor, intent.encryptedAmount, intent.proof, intent.nonce, intent.deadline, intent.signature],
-    { account: submitter }
+    { account: submitter, ...(await gasOverrides()) }
   );
 }
 
@@ -754,7 +782,7 @@ export async function submitRelayedFission(intent) {
   const [submitter] = await createClients().walletClient.getAddresses();
   return market.write.relayedFission(
     [intent.actor, intent.encryptedAmount, intent.proof, intent.nonce, intent.deadline, intent.signature],
-    { account: submitter }
+    { account: submitter, ...(await gasOverrides()) }
   );
 }
 
@@ -763,7 +791,7 @@ export async function submitRelayedCombine(intent) {
   const [submitter] = await createClients().walletClient.getAddresses();
   return market.write.relayedCombine(
     [intent.actor, intent.encryptedAmount, intent.proof, intent.nonce, intent.deadline, intent.signature],
-    { account: submitter }
+    { account: submitter, ...(await gasOverrides()) }
   );
 }
 
@@ -772,7 +800,7 @@ export async function submitRelayedRedeemPT(intent) {
   const [submitter] = await createClients().walletClient.getAddresses();
   return market.write.relayedRedeemPT(
     [intent.actor, intent.encryptedAmount, intent.proof, intent.nonce, intent.deadline, intent.signature],
-    { account: submitter }
+    { account: submitter, ...(await gasOverrides()) }
   );
 }
 
@@ -791,7 +819,7 @@ export async function submitRelayedSwap(intent) {
       intent.deadline,
       intent.signature
     ],
-    { account: submitter }
+    { account: submitter, ...(await gasOverrides()) }
   );
 }
 
@@ -800,7 +828,7 @@ export async function submitRelayedMintSY(intent) {
   const [submitter] = await createClients().walletClient.getAddresses();
   return market.write.relayedMintSY(
     [intent.actor, intent.clearAmount, intent.nonce, intent.deadline, intent.signature],
-    { account: submitter }
+    { account: submitter, ...(await gasOverrides()) }
   );
 }
 
@@ -810,7 +838,7 @@ export async function submitRelayedRequestSYRedeem(intent) {
   const market = getMarketContract(walletClient);
   const txHash = await market.write.relayedRequestSYRedeem(
     [intent.actor, intent.clearUsdc, intent.commit, intent.nonce, intent.deadline, intent.signature],
-    { account: submitter }
+    { account: submitter, ...(await gasOverrides()) }
   );
   const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
   for (const log of receipt.logs) {
@@ -867,7 +895,7 @@ export async function submitRelayedSettleSYRedeem(payload) {
       payload.signature,
       payload.decryptionProof
     ],
-    { account: submitter }
+    { account: submitter, ...(await gasOverrides()) }
   );
   removePending(payload.actor, payload.message.id);
   return txHash;

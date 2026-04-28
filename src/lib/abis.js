@@ -425,6 +425,13 @@ export const fissionMarketAbi = [
     outputs: [{ type: 'address' }]
   },
   {
+    type: 'function',
+    name: 'owner',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'address' }]
+  },
+  {
     type: 'event',
     name: 'RedeemRequested',
     inputs: [
