@@ -288,6 +288,35 @@ export async function adminAddAmmLiquidity(reserveName, amount) {
   return market.write.addAmmLiquidity([reserve, handle, handleProof], { account });
 }
 
+export async function addLiquiditySYPT(syAmount, ptAmount) {
+  const { walletClient } = createClients();
+  const [account] = await walletClient.getAddresses();
+  const sy = await encryptAmount(syAmount);
+  const pt = await encryptAmount(ptAmount);
+  const market = getMarketContract(walletClient);
+  return market.write.addLiquiditySYPT([sy.handle, sy.handleProof, pt.handle, pt.handleProof], { account });
+}
+
+export async function removeLiquiditySYPT(lpAmount) {
+  const { walletClient } = createClients();
+  const [account] = await walletClient.getAddresses();
+  const lp = await encryptAmount(lpAmount);
+  const market = getMarketContract(walletClient);
+  return market.write.removeLiquiditySYPT([lp.handle, lp.handleProof], { account });
+}
+
+export async function decryptLPSYPT(account) {
+  const { publicClient, walletClient } = createClients();
+  const vault = getContract({
+    address: FISSION_ADDRESSES.vault,
+    abi: vaultAbi,
+    client: publicClient
+  });
+  const handle = await vault.read.confidentialBalanceOf([3, account]);
+  const handleClient = await createViemHandleClient(walletClient);
+  return handleClient.decrypt(handle);
+}
+
 export async function adminHarvestAaveYield(toAddress, amountUsdc) {
   const { walletClient } = createClients();
   const [account] = await walletClient.getAddresses();

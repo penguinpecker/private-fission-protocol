@@ -113,8 +113,8 @@ describe("FissionMarket", () => {
       );
     });
 
-    it("reverts InvalidKind on vault.confidentialBalanceOf with kind > 2", async () => {
-      await rejectsWithError(vault.confidentialBalanceOf(3, alice.address), "InvalidKind");
+    it("reverts InvalidKind on vault.confidentialBalanceOf with kind > KIND_MAX", async () => {
+      await rejectsWithError(vault.confidentialBalanceOf(99, alice.address), "InvalidKind");
     });
   });
 
@@ -366,6 +366,61 @@ describe("FissionMarket", () => {
       // Snapshot was taken in maturity-gating block.
       const yieldUsdc = await market.maturityYieldUsdc();
       assert.ok(yieldUsdc >= 0n);
+    });
+  });
+
+  describe("liquidity provision", () => {
+    let lpMarket;
+    let lpMarketAdapter;
+
+    before(async () => {
+      const futureMaturity = (await provider.getBlock("latest")).timestamp + 60 * 60 * 24 * 30;
+      const Market = await ethers.getContractFactory("FissionMarket");
+      const cfg = {
+        maturity: futureMaturity,
+        usdc: AAVE_USDC,
+        aUsdc: AAVE_AUSDC,
+        aavePool: AAVE_V3_POOL,
+        syReserveSeed: 1_000_000n * 10n ** 18n,
+        ptReserveSeed: 1_026_000n * 10n ** 18n,
+        ytReserveSeed: 12_000_000n * 10n ** 18n
+      };
+      lpMarket = await Market.deploy(owner.address, cfg);
+      await lpMarket.waitForDeployment();
+      lpMarketAdapter = await ethers.getContractAt("AaveUSDCYieldAdapter", await lpMarket.adapter());
+    });
+
+    it("notMatured gates addLiquiditySYPT and removeLiquiditySYPT", async () => {
+      const handle = "0x" + "ee".repeat(32);
+      const proof = abiEncodeUint256(0n);
+      // Pre-maturity, the call should NOT revert with AlreadyMatured. We don't have alice's
+      // SY/PT minted here so it'll likely revert in the vault — we just want to confirm the
+      // gate is checked first.
+      try {
+        await lpMarket.connect(alice).addLiquiditySYPT(handle, proof, handle, proof);
+      } catch (err) {
+        const msg = String(err.message ?? err);
+        const { id } = await import("ethers");
+        const matured = id("AlreadyMatured()").slice(0, 10);
+        // Should NOT be the AlreadyMatured selector pre-maturity.
+        assert.ok(!msg.includes(matured), `unexpected matured error: ${msg}`);
+      }
+    });
+
+    it("blocks addLiquiditySYPT post-maturity", async () => {
+      const m = await lpMarket.maturity();
+      await provider.send("evm_setNextBlockTimestamp", [Number(m) + 1]);
+      await provider.send("evm_mine", []);
+      const handle = "0x" + "dd".repeat(32);
+      const proof = abiEncodeUint256(0n);
+      await rejectsWithError(
+        lpMarket.connect(alice).addLiquiditySYPT(handle, proof, handle, proof),
+        "AlreadyMatured"
+      );
+      await rejectsWithError(
+        lpMarket.connect(alice).removeLiquiditySYPT(handle, proof),
+        "AlreadyMatured"
+      );
     });
   });
 
