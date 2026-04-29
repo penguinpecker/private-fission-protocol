@@ -4,17 +4,22 @@ pragma solidity ^0.8.28;
 import {Nox, ebool, euint256} from "@iexec-nox/nox-protocol-contracts/contracts/sdk/Nox.sol";
 
 /**
- * Single confidential vault that holds SY, PT, and YT balances under one contract address.
+ * Single confidential vault holding SY, PT, YT, and LP balances under one contract address.
+ * Built on the same Nox confidential primitives used by ERC-7984 (`euint256` balances, encrypted
+ * `_update` math) but exposed through a kind-prefixed multi-asset interface
+ * (`confidentialBalanceOf(kind, account)`, `mintConfidential(kind, ...)`, etc.).
  *
- * The previous design used three separate FissionPositionToken contracts. Even with their
- * `ConfidentialTransfer` events suppressed, the underlying contract address still leaks which
- * leg was touched: an observer doing `eth_getLogs(address: ptContract)` knew when PT had any
- * activity at all. Folding all three legs into a single contract removes that signal — every
- * leg's transfers now appear at the same address and the per-leg activity timeline blends.
+ * Why the multi-asset shape rather than five separate ERC-7984 token contracts:
+ * - Cross-leg unlinkability: with five contracts, `eth_getLogs(address: ptContract)` reveals when
+ *   any PT activity occurred even with amounts encrypted. One contract address blends all kinds.
+ * - Uniform action event signature: every leg's transfer surfaces through the market's single
+ *   `ConfidentialAction(handleA, handleB)` event with no indexed topics. Observers can't filter
+ *   by leg via event topics either.
  *
- * No `ConfidentialTransfer` event is emitted by design. The market is the only canonical activity
- * log via its uniform `ConfidentialAction` event. ERC-7984 standard event compliance is broken
- * intentionally; balance discovery happens via direct `confidentialBalanceOf(kind, account)`.
+ * The vault uses Nox confidential balances correctly (encrypted `euint256`, encrypted `_update`,
+ * Nox.allow ACL hygiene) — the deviation from a vanilla ERC-7984 token is the *interface shape*
+ * (kind-prefixed, single contract) chosen for the privacy properties above. Balance discovery
+ * happens via `confidentialBalanceOf(kind, account)` rather than the per-token getter.
  */
 contract FissionPositionVault {
     uint8 public constant KIND_SY = 0;

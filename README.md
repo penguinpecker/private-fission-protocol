@@ -2,6 +2,27 @@
 
 A confidential Pendle-style yield market on Arbitrum Sepolia. Users deposit USDC into Aave, mint encrypted SY, split it into encrypted PT (principal) and YT (yield), trade through a confidential AMM with Uniswap-V2 fees plus encrypted slippage, and redeem at maturity — all with balances, fills, swap amounts, and LP shares stored as Nox handles on-chain.
 
+> Submitted to the [iExec Vibe Coding Challenge](https://dorahacks.io/) — built on iExec Nox + Confidential Tokens, vibe-coded with Claude Code.
+
+## Live deployment
+
+| | Address (Arbitrum Sepolia, chainId 421614) |
+|---|---|
+| **dApp** | https://private-fission-protocol.vercel.app/ |
+| Market | [`0x32AFc6748E3752f73b68619667dC2624e098c26F`](https://sepolia.arbiscan.io/address/0x32AFc6748E3752f73b68619667dC2624e098c26F) |
+| Vault | [`0x4Da1AF0Fe50492EbD85010A096f7e3aDEe6B5412`](https://sepolia.arbiscan.io/address/0x4Da1AF0Fe50492EbD85010A096f7e3aDEe6B5412) |
+| Adapter | [`0x5336e0d969cBE43c19981AC88613fCF7AE4a86D1`](https://sepolia.arbiscan.io/address/0x5336e0d969cBE43c19981AC88613fCF7AE4a86D1) |
+| Factory | [`0x07dAF75612Dea30B9941EA3241fe6b6792c5d0e9`](https://sepolia.arbiscan.io/address/0x07dAF75612Dea30B9941EA3241fe6b6792c5d0e9) |
+| USDC (test) | [`0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d`](https://sepolia.arbiscan.io/token/0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d) — get test USDC at [faucet.circle.com](https://faucet.circle.com/) |
+
+All four contracts are verified on Arbiscan.
+
+## Project docs
+
+- [SUBMISSION.md](./SUBMISSION.md) — hackathon submission checklist + 4-minute demo script + X post template
+- [feedback.md](./feedback.md) — concrete feedback on iExec Nox tooling and SDK ergonomics
+- [PRIVACY_AUDIT.md](./PRIVACY_AUDIT.md) — frontend leak audit (no console logs, no analytics, no third-party fetches; localStorage scope documented)
+
 ## Run Locally
 
 ```bash
@@ -22,7 +43,7 @@ Open `http://127.0.0.1:3000/`.
 
 ## Contracts (`contracts/`)
 
-- **`FissionMarket.sol`** — main entry point. Wraps every confidential action (`mintSY`, `fission`, `combine`, `redeemPT`, `requestSYRedeem`/`settleSYRedeem`, `redeemYT`/`settleYTRedeem`, the four AMM routes, `addLiquiditySYPT`/`removeLiquiditySYPT`, `addLiquiditySYYT`/`removeLiquiditySYYT`) with an EIP-712 relayed variant. Constructor takes a `MarketConfig` struct so the same code can target different yield sources / underlyings.
+- **`FissionMarket.sol`** — main entry point. Wraps every confidential action (`mintSY`, `fission`, `combine`, `redeemPT`, `requestSYRedeem`/`settleSYRedeem`, `redeemYTToSY`, the four AMM routes, `addLiquiditySYPT`/`removeLiquiditySYPT`, `addLiquiditySYYT`/`removeLiquiditySYYT`) with an EIP-712 relayed variant. Constructor takes a `MarketConfig` struct so the same code can target different yield sources / underlyings.
 - **`FissionPositionVault.sol`** — single confidential vault holding SY, PT, YT, LP-SY-PT, LP-SY-YT under one address. Custom `_update` suppresses the standard ERC-7984 `ConfidentialTransfer` event for privacy.
 - **`AaveUSDCYieldAdapter.sol`** — generic Aave V3 single-asset adapter. Constructor takes `(market, usdc, aUsdc, pool)` so the addresses aren't hardcoded.
 - **`FissionMarketFactory.sol`** — owner-only registry of deployed markets. The market's full creation bytecode exceeds 24KB so the factory is a registry, not a deployer.
