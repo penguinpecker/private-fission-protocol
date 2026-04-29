@@ -1,6 +1,6 @@
 # Private Fission Protocol
 
-A confidential Pendle-style yield market on Arbitrum Sepolia. Users deposit USDC into Aave, mint encrypted SY, split it into encrypted PT (principal) and YT (yield), trade through a confidential AMM with Uniswap-V2 fees plus encrypted slippage, and redeem at maturity — all with balances, fills, swap amounts, and LP shares stored as Nox handles on-chain.
+A confidential Pendle-style yield market on Arbitrum Sepolia. Users deposit USDC into the protocol's Aave-backed yield adapter and receive encrypted SY in return; SY can be split into encrypted PT (principal) and YT (yield), traded through a confidential AMM with Uniswap-V2 fees plus encrypted slippage, and redeemed at maturity — all with balances, fills, swap amounts, and LP shares stored as Nox handles on-chain. The adapter custodies the aUSDC and batches actual Aave deposits via a permissionless `rebalance()` so individual mints are unlinkable from Aave events.
 
 > Submitted to the [iExec Vibe Coding Challenge](https://dorahacks.io/) — built on iExec Nox + Confidential Tokens, vibe-coded with Claude Code.
 
