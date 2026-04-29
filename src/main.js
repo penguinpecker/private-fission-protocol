@@ -188,6 +188,7 @@ async function connectWallet() {
     resetScroll();
     refreshPostConnectState();
     attachWalletListeners();
+    persistSession();
   } catch (error) {
     state.txStatus = '';
     toast(error.message || 'Wallet connection failed');
@@ -214,6 +215,7 @@ function refreshPostConnectState() {
   readMaturity().then((m) => { state.maturity = m; render(); }).catch(() => {});
   readUSDCAllowance(state.account).then((a) => {
     state.hasUsdcApproval = a > 0n;
+    persistSession();
     render();
   }).catch(() => {});
   listPendingRedeemsForAccount(state.account).then((redeems) => {
@@ -272,6 +274,7 @@ function attachWalletListeners() {
       state.pendingRedeem = null;
       state.pendingRedeems = [];
       state.screen = 'home';
+      clearSession();
       toast('Wallet disconnected');
       render();
       return;
@@ -288,6 +291,103 @@ function attachWalletListeners() {
     toast('Network changed — reload required');
     setTimeout(() => window.location.reload(), 800);
   });
+}
+
+// ---- Session persistence ----
+//
+// Per-account cache lives in localStorage under SESSION_KEY. It survives reloads so the user
+// doesn't have to reconnect, re-decrypt, or re-discover their approval state on every refresh.
+// Persisted: account, decrypted portfolio (stale-but-displayable), USDC allowance heuristic,
+// last-seen chainId, the relay-mode toggle, and the user's preferred screen. Pending redeems
+// have their own per-account localStorage scheme inside fissionApi.js.
+
+const SESSION_KEY = 'fission:session';
+
+function persistSession() {
+  if (!state.account) return;
+  try {
+    const payload = {
+      account: state.account,
+      portfolio: state.portfolio
+        ? Object.fromEntries(Object.entries(state.portfolio).map(([k, v]) => [k, String(v)]))
+        : null,
+      portfolioAt: state.portfolio ? Date.now() : null,
+      hasUsdcApproval: state.hasUsdcApproval,
+      chainId: state.chainId,
+      useRelay: state.useRelay,
+      screen: state.screen
+    };
+    window.localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
+  } catch {
+    /* localStorage full or blocked — degrade gracefully */
+  }
+}
+
+function clearSession() {
+  try { window.localStorage.removeItem(SESSION_KEY); } catch {}
+}
+
+function loadSession() {
+  try {
+    const raw = window.localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function applySession(session) {
+  if (!session?.account) return false;
+  state.account = session.account;
+  state.wallet = true;
+  state.chainId = session.chainId ?? null;
+  state.hasUsdcApproval = !!session.hasUsdcApproval;
+  state.useRelay = !!session.useRelay;
+  state.screen = session.screen && session.screen !== 'home' ? session.screen : 'markets';
+  if (session.portfolio) {
+    state.portfolio = Object.fromEntries(
+      Object.entries(session.portfolio).map(([k, v]) => [k, BigInt(v)])
+    );
+  }
+  return true;
+}
+
+/**
+ * Re-attach to a previously connected wallet without prompting MetaMask.
+ *
+ * Approach: read EIP-1193 `eth_accounts` (silent — only returns addresses if the wallet has
+ * already authorised this site). If it matches the account we cached, restore state and kick
+ * off a fresh background refresh. If the wallet has switched accounts, clear the stale cache.
+ */
+async function silentReconnect() {
+  if (!window.ethereum) return false;
+  const session = loadSession();
+  if (!session) return false;
+  // Optimistic render from cache so the UI is populated before any RPC roundtrip.
+  applySession(session);
+  render();
+  try {
+    const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+    if (!accounts?.length) {
+      // Wallet locked or revoked permission — keep the cached read-only view; user can
+      // re-click Connect to refresh.
+      return true;
+    }
+    if (accounts[0].toLowerCase() !== session.account.toLowerCase()) {
+      // Different account selected — discard the stale cache.
+      clearSession();
+      state.account = accounts[0];
+      state.portfolio = null;
+      state.hasUsdcApproval = false;
+      render();
+    }
+    refreshPostConnectState();
+    attachWalletListeners();
+    return true;
+  } catch {
+    return true;
+  }
 }
 
 function toast(text) {
@@ -951,6 +1051,7 @@ function render() {
       }
       if (el.dataset.modalAction === 'toggle-relay') {
         state.useRelay = !state.useRelay;
+        persistSession();
         toast(`Relay mode ${state.useRelay ? 'ON' : 'OFF'}`);
         render();
       }
@@ -969,6 +1070,7 @@ function render() {
         state.pendingRedeems = [];
         state.modal = null;
         state.screen = 'home';
+        clearSession();
         toast('Disconnected');
         render();
       }
@@ -1084,6 +1186,7 @@ async function executeModalTransaction() {
       state.portfolio = await decryptPortfolio(state.account);
       state.modal = null;
       state.txStatus = '';
+      persistSession();
       toast('Balances decrypted locally');
       return;
     }
@@ -1297,3 +1400,6 @@ function formatEncryptedBalance(value) {
 }
 
 render();
+// Re-attach to a previously connected wallet without prompting MetaMask. Hydrates portfolio,
+// approval state, and chain ID from localStorage so refresh feels instant.
+silentReconnect().catch(() => {});

@@ -590,7 +590,11 @@ export async function decryptKindBalance(kind, account) {
   // connected chain), so short-circuit to a clean zero balance instead of throwing.
   if (isUninitializedHandle(balanceHandle)) return 0n;
   const handleClient = await createViemHandleClient(walletClient);
-  return handleClient.decrypt(balanceHandle);
+  // handleClient.decrypt returns { value, solidityType }. Unwrap so callers get a bigint
+  // directly — the formatter does BigInt(x) and chokes on the object form, rendering
+  // "[object Object]" in the catch fallback.
+  const result = await handleClient.decrypt(balanceHandle);
+  return result?.value ?? 0n;
 }
 
 function cleanAmount(amount) {
