@@ -4,7 +4,7 @@ iExec Vibe Coding Challenge · DoraHacks · Submission deadline 2026-05-02 03:29
 
 ## TL;DR
 
-A confidential Pendle-style yield market on Arbitrum Sepolia, built on iExec Nox + Confidential Tokens (ERC-7984 primitives). Users deposit USDC into Aave, mint encrypted SY, split into encrypted PT (principal) and YT (yield), trade through a confidential AMM with encrypted slippage, and redeem at maturity — balances, fills, swap amounts, and LP shares all stored as Nox handles on-chain.
+A confidential Pendle-style yield market on Arbitrum Sepolia, built on iExec Nox + Confidential Tokens (ERC-7984 primitives). Users deposit USDC into the protocol's Aave-backed yield adapter and receive encrypted SY; SY splits into encrypted PT (principal) and YT (yield), trades through a confidential AMM with encrypted slippage, and redeems at maturity — balances, fills, swap amounts, and LP shares all stored as Nox handles on-chain. The adapter custodies the aUSDC and batches actual Aave deposits, so individual user mints are unlinkable from Aave Supply events.
 
 ## Live links
 
