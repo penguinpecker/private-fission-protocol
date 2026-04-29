@@ -909,21 +909,30 @@ function denominationPicker(label, value, token, key) {
 }
 
 function screenPortfolio() {
-  const balances = state.portfolio
+  // Pre-decrypt: every kind shows "Encrypted handle". Post-decrypt: only show kinds with a
+  // non-zero balance — empty kinds clutter the UI without telling the user anything they
+  // didn't already know.
+  const allRows = state.portfolio
     ? [
-        ['SY-USDC', formatEncryptedBalance(state.portfolio.sy), 'Confidential Aave-backed yield base'],
-        ['PT-USDC-30D', formatEncryptedBalance(state.portfolio.pt), 'Encrypted principal exposure'],
-        ['YT-USDC-30D', formatEncryptedBalance(state.portfolio.yt), 'Encrypted future yield exposure'],
-        ['LP-SY-PT-30D', formatEncryptedBalance(state.portfolio.lpSyPt), 'SY/PT pool LP share'],
-        ['LP-SY-YT-30D', formatEncryptedBalance(state.portfolio.lpSyYt), 'SY/YT pool LP share']
+        ['SY-USDC', state.portfolio.sy, 'Confidential Aave-backed yield base'],
+        ['PT-USDC-30D', state.portfolio.pt, 'Encrypted principal exposure'],
+        ['YT-USDC-30D', state.portfolio.yt, 'Encrypted future yield exposure'],
+        ['LP-SY-PT-30D', state.portfolio.lpSyPt, 'SY/PT pool LP share'],
+        ['LP-SY-YT-30D', state.portfolio.lpSyYt, 'SY/YT pool LP share']
       ]
     : [
-        ['SY-USDC', 'Encrypted handle', 'Decrypt with your wallet to view'],
-        ['PT-USDC-30D', 'Encrypted handle', 'Decrypt with your wallet to view'],
-        ['YT-USDC-30D', 'Encrypted handle', 'Decrypt with your wallet to view'],
-        ['LP-SY-PT-30D', 'Encrypted handle', 'Decrypt with your wallet to view'],
-        ['LP-SY-YT-30D', 'Encrypted handle', 'Decrypt with your wallet to view']
+        ['SY-USDC', null, 'Decrypt with your wallet to view'],
+        ['PT-USDC-30D', null, 'Decrypt with your wallet to view'],
+        ['YT-USDC-30D', null, 'Decrypt with your wallet to view'],
+        ['LP-SY-PT-30D', null, 'Decrypt with your wallet to view'],
+        ['LP-SY-YT-30D', null, 'Decrypt with your wallet to view']
       ];
+
+  const visibleRows = state.portfolio
+    ? allRows.filter(([, raw]) => {
+        try { return BigInt(raw) > 0n; } catch { return true; }
+      })
+    : allRows;
 
   return `
     <section class="portfolio-grid">
@@ -936,13 +945,18 @@ function screenPortfolio() {
           <button class="ghost" data-modal="decrypt">Decrypt</button>
         </div>
         <div class="position-list">
-          ${balances.map(([token, amount, note]) => `
-            <div class="position-row">
-              <div><b>${token}</b><small>${note}</small></div>
-              <strong>${amount}</strong>
-              <span>${state.portfolio ? 'Decrypted locally' : 'Encrypted'}</span>
-            </div>
-          `).join('')}
+          ${visibleRows.length === 0
+            ? '<div class="position-row"><div><b>No active positions</b><small>Mint SY to start a position. Empty kinds are hidden.</small></div></div>'
+            : visibleRows.map(([token, raw, note]) => {
+                const amount = state.portfolio ? formatEncryptedBalance(raw) : 'Encrypted handle';
+                return `
+                  <div class="position-row">
+                    <div><b>${token}</b><small>${note}</small></div>
+                    <strong>${amount}</strong>
+                    <span>${state.portfolio ? 'Decrypted locally' : 'Encrypted'}</span>
+                  </div>
+                `;
+              }).join('')}
         </div>
         ${state.txStatus ? `<div class="tx-status">${state.txStatus}</div>` : ''}
       </div>
