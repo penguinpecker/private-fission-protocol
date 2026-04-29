@@ -358,7 +358,7 @@ export async function requestSYRedeem(clearUsdc, recipient = null) {
   const market = getMarketContract(walletClient);
   const txHash = await market.write.requestSYRedeem(
     [parseUnits(cleanAmount(clearUsdc), 6), commit],
-    { account }
+    { account, ...(await gasOverrides()) }
   );
   const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
   for (const log of receipt.logs) {
@@ -532,7 +532,7 @@ export async function swapWithAmm(route, amount, minAmountOut = '0') {
 
   return market.write[method](
     [inEnc.handle, inEnc.handleProof, minEnc.handle, minEnc.handleProof],
-    { account }
+    { account, ...(await gasOverrides()) }
   );
 }
 
