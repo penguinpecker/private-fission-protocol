@@ -548,7 +548,7 @@ function screenHome() {
       <div class="how-grid">
         <article>
           <b>1. Mint SY</b>
-          <p>USDC is routed into the Aave-backed reserve and represented as confidential SY inside Fission using Nox handles.</p>
+          <p>USDC is custodied by the protocol's Aave-backed adapter and represented as confidential SY inside Fission using Nox handles. The adapter batches actual Aave deposits via a permissionless rebalance, so per-user mints don't surface on Aave 1:1.</p>
         </article>
         <article>
           <b>2. Split yield</b>
@@ -984,7 +984,7 @@ function modal(type) {
     trade: ['Confidential AMM trade', 'Your trade amount is encrypted before submission. A 30 bps fee accrues to LPs. If the encrypted fill falls below your slippage minimum the input is refunded — both branches execute as encrypted no-ops so observers cannot tell which path ran.', 'Confirm trade', 'tx'],
     decrypt: ['Decrypt balances', 'Request a gasless Nox decryption for your SY, PT, and YT handles. Only this wallet can read them.', 'Decrypt now', 'tx'],
     'redeem-pt': ['Redeem PT for SY', 'After maturity, every PT redeems 1:1 for confidential SY. Both legs stay encrypted; only the fact a redemption occurred is public.', 'Redeem PT', 'tx'],
-    'redeem-sy': ['Redeem SY for USDC', 'Step 1 burns your confidential SY and stakes a Nox attestation that the burn matched the requested USDC amount. Step 2 settles the redemption once the Nox network signs the attestation. The USDC amount you redeem is public — converting back to a public asset reveals that exit size.', 'Submit redeem request', 'tx'],
+    'redeem-sy': ['Redeem SY for USDC', 'Step 1 burns confidential SY and stages an encrypted amount handle plus a keccak256(recipient, salt) commit — no recipient address, no cleartext amount in storage or events. Wait the 5-minute REDEEM_MIN_DELAY (timing decorrelation), then Step 2 settles by revealing the (recipient, salt) pair, decrypting the burn handle, and paying USDC out of the adapter float. The USDC payout amount is the irreducible exit-size leak.', 'Submit redeem request', 'tx'],
     'redeem-yt': ['Claim YT yield privately', 'Burn YT and receive an equivalent amount of *encrypted* SY corresponding to your pro-rata yield share. There is no public per-claim payout — yield amount stays encrypted. Exit via the SY → USDC bucket redeem when ready.', 'Claim yield as encrypted SY', 'tx'],
     'lp-add': ['Add SY/PT liquidity', 'Deposit encrypted SY and PT into the AMM in any ratio; the contract mints LP proportional to the limiting side and refunds the over-supplied side. LP tokens accrue swap-fee value as the pool grows.', 'Add liquidity', 'tx'],
     'lp-remove': ['Remove SY/PT liquidity', 'Burn LP tokens to withdraw a proportional share of the SY and PT reserves at the current pool ratio. All amounts stay encrypted.', 'Remove liquidity', 'tx'],
@@ -1002,7 +1002,7 @@ function modal(type) {
         ${type === 'mint' ? denominationPicker('USDC denomination', state.mintAmount, 'USDC', 'mintAmount') : ''}
         ${type === 'redeem-pt' ? amountInput('PT amount', state.redeemPtAmount, 'PT-USDC-30D', 'redeemPtAmount') : ''}
         ${type === 'redeem-sy' ? denominationPicker('USDC denomination', state.redeemUsdcAmount, 'USDC', 'redeemUsdcAmount') : ''}
-        ${type === 'redeem-sy' && state.pendingRedeem ? `<div class="privacy-stack compact"><span>Pending request id ${state.pendingRedeem.id}</span><span>Settle once the Nox attestation is fetched.</span></div>` : ''}
+        ${type === 'redeem-sy' && state.pendingRedeem ? `<div class="privacy-stack compact"><span>Pending request id ${state.pendingRedeem.id}</span><span>Settle after the 5-min delay; salt is held locally.</span></div>` : ''}
         ${type === 'redeem-yt' ? amountInput('YT amount', state.redeemYtAmount, 'YT-USDC-30D', 'redeemYtAmount') : ''}
         ${type === 'lp-add' ? amountInput('SY amount', state.lpSyAmount, 'SY-USDC', 'lpSyAmount') : ''}
         ${type === 'lp-add' ? amountInput('PT amount', state.lpPtAmount, 'PT-USDC-30D', 'lpPtAmount') : ''}
